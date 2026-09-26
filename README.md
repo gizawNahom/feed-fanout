@@ -28,7 +28,7 @@ GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (new
 |---|---|---|
 | [v1-in-memory](https://github.com/gizawNahom/feed-fanout/tree/v1-in-memory) | `queue.Queue` + worker threads in one process | Proves the pattern: decouple posting from slow fanout |
 | [v2-kafka](https://github.com/gizawNahom/feed-fanout/tree/v2-kafka) | Kafka as the queue; separate producer and worker processes; at-least-once commits | Queued work survives crashes; workers scale independently |
-| **v3-service** *(in progress)* | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations | A real API; feeds are shared, persistent, and paginated |
+| **v3-service** | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations + integration tests | A real API; feeds are shared, persistent, and paginated |
 | v4-reliable *(planned)* | Retry/dead-letter topics, outbox, graceful shutdown | Never lose or duplicate a post |
 | v5-ops *(planned)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
 | v6-scale *(planned)* | Metrics, load testing, caching, celebrity handling | Measured performance |
@@ -72,6 +72,16 @@ curl localhost:8000/users/bob/feed                                    # bob's fe
 | `DELETE` | `/users/{id}/following/{followee}` | Unfollow → `204` |
 | `GET` | `/users/{id}/feed?limit=20&cursor=…` | Feed, newest first. Pass `next_cursor` from the response to get older posts. |
 
+## Tests
+
+```bash
+uv run pytest
+```
+
+Integration tests run against **real Postgres and Kafka** in throwaway containers ([testcontainers](https://testcontainers.com/)), using the same images as `docker-compose.yml`. Your dev containers and data are never touched. Each test gets empty tables and its own Kafka topic. The schema is built by running the real Alembic migrations, so the migrations are tested too. Docker must be running.
+
+They cover the behavior that matters: followers receive posts and non-followers don't; replaying an event adds no duplicates; malformed events are skipped without stopping the worker; feeds are newest-first; and pagination returns every post exactly once, even when timestamps tie.
+
 ## Observability
 
 | What | Where |
@@ -101,7 +111,6 @@ curl localhost:8000/users/bob/feed                                    # bob's fe
 - **Dual write.** The API commits the post and then publishes the event. If it crashes in between, the post is never fanned out. *(v4: outbox pattern)*
 - **Malformed events are dropped**, not kept for inspection. *(v4: dead-letter topic)*
 - **Workers don't handle SIGTERM.** A killed worker never leaves its group, so its partitions stall until the session timeout (~45s). *(v4)*
-- **No automated tests yet.** *(v3, next step)*
 - **Single Kafka broker; services run outside Docker.** *(v5)*
 
 ## License

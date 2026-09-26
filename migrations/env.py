@@ -22,8 +22,10 @@ if config.config_file_name is not None:
 # from myapp import mymodel
 target_metadata = Base.metadata
 
-# Use the app's database URL (env var DATABASE_URL, or the local default) instead of alembic.ini.
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
+# Use the app's database URL (env var DATABASE_URL, or the local default), unless the caller
+# already set one programmatically (the tests do, to migrate their throwaway database).
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

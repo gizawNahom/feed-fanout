@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
@@ -19,22 +20,30 @@ from sqlalchemy import delete, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from feed_fanout.config import KAFKA_BOOTSTRAP_SERVERS
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
-from feed_fanout.kafka import producer, publish_post_created
+from feed_fanout.kafka import PostCreatedPublisher
 from feed_fanout.models import FeedItem, Follow, Post
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("feed_fanout.api")
 
 
+@lru_cache
+def get_publisher() -> PostCreatedPublisher:
+    """One Kafka producer per process, created on first use. Overridden in tests."""
+    return PostCreatedPublisher(KAFKA_BOOTSTRAP_SERVERS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     # Messages still buffered in the producer are lost if we exit without flushing.
-    remaining = producer.flush(10)
-    if remaining:
-        log.error("shutdown: %d message(s) were not delivered", remaining)
+    if get_publisher.cache_info().currsize:
+        remaining = get_publisher().flush(10)
+        if remaining:
+            log.error("shutdown: %d message(s) were not delivered", remaining)
 
 
 app = FastAPI(title="feed-fanout", lifespan=lifespan)
@@ -46,6 +55,7 @@ def get_session() -> Iterator[Session]:
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
+PublisherDep = Annotated[PostCreatedPublisher, Depends(get_publisher)]
 UserId = Annotated[str, Field(min_length=1, max_length=64)]
 
 
@@ -73,14 +83,14 @@ class FeedPage(BaseModel):
 # --- Posts ------------------------------------------------------------------
 
 @app.post("/posts", status_code=status.HTTP_201_CREATED)
-def create_post(body: CreatePost, session: SessionDep) -> PostOut:
+def create_post(body: CreatePost, session: SessionDep, publisher: PublisherDep) -> PostOut:
     post = Post(author_id=body.author_id, text=body.text)
     session.add(post)
     session.commit()
 
     # Known gap (fixed in v4 with an outbox): if the process dies between the commit
     # above and this publish, the post exists but is never fanned out.
-    publish_post_created(PostCreated(post_id=post.id, author_id=post.author_id, created_at=post.created_at))
+    publisher.publish(PostCreated(post_id=post.id, author_id=post.author_id, created_at=post.created_at))
     log.info("post created post_id=%s author_id=%s", post.id, post.author_id)
     return PostOut.model_validate(post)
 

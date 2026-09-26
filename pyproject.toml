@@ -10,3 +10,14 @@ dependencies = [
     "sqlalchemy>=2.1.1",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "testcontainers[postgres]>=4.15.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
