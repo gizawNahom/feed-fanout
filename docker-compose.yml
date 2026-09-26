@@ -10,12 +10,16 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
 
-      # 9092 = clients (our producer/consumer), 9093 = internal controller traffic.
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      # Three listeners:
+      #   HOST       localhost:9092 - code running on your machine (our Python producer/consumer)
+      #   DOCKER     kafka:29092    - other containers on the compose network (Kafka UI, later our services)
+      #   CONTROLLER :9093          - internal KRaft controller traffic
+      # A client connects, then is told the "advertised" address to use, so each audience needs its own.
+      KAFKA_LISTENERS: HOST://:9092,DOCKER://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: HOST:PLAINTEXT,DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
 
       # Internal topics default to replication factor 3, which one broker can't satisfy.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -34,6 +38,20 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+
+  # Web dashboard for Kafka: browse messages, partitions, consumer groups and lag.
+  # http://localhost:8080
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    container_name: feed-fanout-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: feed-fanout
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
 
 volumes:
   kafka-data:
