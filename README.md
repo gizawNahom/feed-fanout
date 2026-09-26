@@ -6,11 +6,16 @@ System design interviews talk about queues, workers, and "fanout-on-write" throu
 
 ## The design
 
-When a user posts, we don't build everyone's feed on the spot. We publish a "post created" event and return immediately. Fanout workers consume the events and copy each post into every follower's precomputed feed, so reading a feed is a cheap lookup.
+When a user posts, we don't build everyone's feed on the spot. We save the post, publish a "post created" event, and return immediately. Fanout workers consume the events and copy each post into every follower's precomputed feed, so reading a feed is a cheap indexed lookup.
 
 ```
-producer.py ──► Kafka topic "post-created" ──► consumer.py (×N, one consumer group)
- create_post()    3 partitions, key = author      look up followers → write to their feeds
+POST /posts ──► API ──► Postgres: posts
+                 │
+                 └──► Kafka "post-created" ──► fanout worker (×N) ──► Postgres: feed_items
+                      (key = author)            look up followers,       one row per
+                                                insert feed rows         (follower, post)
+
+GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (newest first)
 ```
 
 **The trade-off:** posting is fast and reads are cheap, but feeds are *eventually consistent*. A new post takes a moment to reach every follower.
@@ -22,9 +27,9 @@ producer.py ──► Kafka topic "post-created" ──► consumer.py (×N, one
 | Version | What it adds | What it fixes |
 |---|---|---|
 | [v1-in-memory](https://github.com/gizawNahom/feed-fanout/tree/v1-in-memory) | `queue.Queue` + worker threads in one process | Proves the pattern: decouple posting from slow fanout |
-| **v2-kafka** | Kafka as the queue; producer and fanout worker as separate processes; at-least-once commits | Queued work survives crashes; workers scale independently; no skipped posts |
-| v3-service *(next)* | FastAPI + Postgres | Feeds become shared and persistent; a real API |
-| v4-reliable *(planned)* | Retry/dead-letter topics, outbox, graceful rebalancing | Never lose or duplicate a post |
+| [v2-kafka](https://github.com/gizawNahom/feed-fanout/tree/v2-kafka) | Kafka as the queue; separate producer and worker processes; at-least-once commits | Queued work survives crashes; workers scale independently |
+| **v3-service** *(in progress)* | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations | A real API; feeds are shared, persistent, and paginated |
+| v4-reliable *(planned)* | Retry/dead-letter topics, outbox, graceful shutdown | Never lose or duplicate a post |
 | v5-ops *(planned)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
 | v6-scale *(planned)* | Metrics, load testing, caching, celebrity handling | Measured performance |
 
@@ -36,44 +41,68 @@ Requires Docker and [uv](https://docs.astral.sh/uv/).
 git clone https://github.com/gizawNahom/feed-fanout.git
 cd feed-fanout
 
-# 1. Start Kafka and Kafka UI
+# 1. Start Kafka, Postgres, and the dashboards
 docker compose up -d
 
-# 2. Create the topic (once)
+# 2. One-time setup: create the topic and the database tables
 docker exec feed-fanout-kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 --create --topic post-created --partitions 3 --replication-factor 1
+uv run alembic upgrade head
 
-# 3. Start a fanout worker (terminal 1)
-uv run python consumer.py
-
-# 4. Publish some posts (terminal 2)
-uv run python producer.py
+# 3. Run the API (terminal 1) and a fanout worker (terminal 2)
+uv run uvicorn feed_fanout.api:app --reload
+uv run python -m feed_fanout.worker
 ```
 
-Press Ctrl+C in the consumer to stop it. It prints the feeds it built.
+Try it:
 
-**Kafka UI** runs at http://localhost:8080. Use it to browse messages, see which partition each author lands on, and watch the `fanout-workers` consumer group's lag.
+```bash
+curl -X PUT localhost:8000/users/bob/following/alice                  # bob follows alice
+curl -X POST localhost:8000/posts -H 'content-type: application/json' \
+  -d '{"author_id": "alice", "text": "hello world"}'                   # alice posts
+curl localhost:8000/users/bob/feed                                    # bob's feed
+```
+
+## API
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/posts` | Create a post `{author_id, text}` → `201` with the post |
+| `PUT` | `/users/{id}/following/{followee}` | Follow (idempotent) → `204` |
+| `DELETE` | `/users/{id}/following/{followee}` | Unfollow → `204` |
+| `GET` | `/users/{id}/feed?limit=20&cursor=…` | Feed, newest first. Pass `next_cursor` from the response to get older posts. |
+
+## Observability
+
+| What | Where |
+|---|---|
+| API docs, with try-it-out | http://localhost:8000/docs |
+| Kafka UI: messages, partitions, consumer lag | http://localhost:8080 |
+| Adminer: browse `posts`, `follows`, `feed_items` | http://localhost:8081 (System: PostgreSQL, Server: `postgres`, user/password/database: `feed`) |
+| Logs | Every log line carries the `post_id`, so one post can be followed from the API through Kafka to the worker |
 
 ## Things to try
 
-- **Scale out:** start a second `consumer.py`. Kafka splits the 3 partitions between the two workers, and each one processes only its own share.
-- **Durability:** stop the consumer, run the producer, then start the consumer again. The posts waited in Kafka.
-- **Ordering:** posts are keyed by author, so each author's posts always go to the same partition and stay in order.
+- **Scale out:** start a second worker. Kafka splits the partitions between them.
+- **Durability:** stop the worker, create posts, and start it again. The posts waited in Kafka, and the feeds catch up.
+- **Idempotency:** rewind the consumer group and replay events. The worker logs `feeds_added=0`, and no feed gets a duplicate.
 
 ## What's worth knowing
 
-- **Keyed partitioning across clients.** librdkafka (used by `confluent-kafka`) hashes keys with CRC32 by default, while Java clients use murmur2. The producer sets `partitioner: murmur2_random` so a key maps to the same partition no matter which client produced it.
-- **Delivery callbacks.** `produce()` is asynchronous. It only buffers the message locally. The `on_delivery` callback is the only way to learn whether the broker stored it, and `flush()` before exit prevents buffered messages from being lost.
-- **At-least-once delivery.** Auto-commit is off. The worker commits a message's offset only *after* its fanout is done, so a crash can never skip a post. The flip side is that a crash between the fanout and the commit re-delivers the message, so the fanout is idempotent: feeds are keyed by `post_id`, and writing the same post twice leaves one entry.
-- **Malformed messages.** A message the consumer can't parse is logged and skipped instead of crashing the worker. Otherwise it would crash on the same message forever.
+- **Thin events.** The Kafka event carries only `post_id`, `author_id`, and `created_at`. The post itself lives in Postgres, the single source of truth.
+- **Fanout is one SQL statement.** `INSERT INTO feed_items ... SELECT FROM follows ... ON CONFLICT DO NOTHING`. Postgres reads the followers and writes the feed rows itself, without loading anything into Python.
+- **At-least-once + idempotency.** The worker commits a Kafka offset only after the fanout transaction commits. If it crashes in between, the event is re-delivered, and the `(user_id, post_id)` primary key makes the re-run a no-op.
+- **Keyset pagination.** Feeds page by `(created_at, post_id) < cursor` instead of `OFFSET`, so pages stay stable while new posts arrive, and deep pages stay fast.
+- **Keyed partitioning across clients.** librdkafka hashes keys with CRC32 by default, while Java clients use murmur2. The producer sets `partitioner: murmur2_random` so a key always maps to the same partition.
+- **Idempotent producer.** `enable.idempotence` prevents the producer's own retries from duplicating or reordering messages.
 
 ## Current limitations
 
-- **Feeds live in the consumer's memory.** They're lost on restart, and with several consumers each one holds only part of every feed. Nothing else can read them. *(v3: Postgres)*
-- **The social graph is hardcoded.** *(v3)*
-- **One synchronous commit per message** is simple and correct, but slow at high volume. *(v6: batch commits if the load test shows it matters)*
-- **Malformed messages are dropped**, not kept for inspection. *(v4: dead-letter topic)*
-- **Single Kafka broker.** *(v5)*
+- **Dual write.** The API commits the post and then publishes the event. If it crashes in between, the post is never fanned out. *(v4: outbox pattern)*
+- **Malformed events are dropped**, not kept for inspection. *(v4: dead-letter topic)*
+- **Workers don't handle SIGTERM.** A killed worker never leaves its group, so its partitions stall until the session timeout (~45s). *(v4)*
+- **No automated tests yet.** *(v3, next step)*
+- **Single Kafka broker; services run outside Docker.** *(v5)*
 
 ## License
 
