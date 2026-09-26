@@ -22,9 +22,9 @@ producer.py ──► Kafka topic "post-created" ──► consumer.py (×N, one
 | Version | What it adds | What it fixes |
 |---|---|---|
 | [v1-in-memory](https://github.com/gizawNahom/feed-fanout/tree/v1-in-memory) | `queue.Queue` + worker threads in one process | Proves the pattern: decouple posting from slow fanout |
-| **v2-kafka** | Kafka as the queue; producer and fanout worker as separate processes | Queued work survives crashes; workers scale independently |
+| **v2-kafka** | Kafka as the queue; producer and fanout worker as separate processes; at-least-once commits | Queued work survives crashes; workers scale independently; no skipped posts |
 | v3-service *(next)* | FastAPI + Postgres | Feeds become shared and persistent; a real API |
-| v4-reliable *(planned)* | Manual commits, idempotency, retry/dead-letter topics, outbox | Never lose or duplicate a post |
+| v4-reliable *(planned)* | Retry/dead-letter topics, outbox, graceful rebalancing | Never lose or duplicate a post |
 | v5-ops *(planned)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
 | v6-scale *(planned)* | Metrics, load testing, caching, celebrity handling | Measured performance |
 
@@ -64,13 +64,14 @@ Press Ctrl+C in the consumer to stop it. It prints the feeds it built.
 
 - **Keyed partitioning across clients.** librdkafka (used by `confluent-kafka`) hashes keys with CRC32 by default, while Java clients use murmur2. The producer sets `partitioner: murmur2_random` so a key maps to the same partition no matter which client produced it.
 - **Delivery callbacks.** `produce()` is asynchronous. It only buffers the message locally. The `on_delivery` callback is the only way to learn whether the broker stored it, and `flush()` before exit prevents buffered messages from being lost.
+- **At-least-once delivery.** Auto-commit is off. The worker commits a message's offset only *after* its fanout is done, so a crash can never skip a post. The flip side is that a crash between the fanout and the commit re-delivers the message, so the fanout is idempotent: feeds are keyed by `post_id`, and writing the same post twice leaves one entry.
 - **Malformed messages.** A message the consumer can't parse is logged and skipped instead of crashing the worker. Otherwise it would crash on the same message forever.
 
 ## Current limitations
 
 - **Feeds live in the consumer's memory.** They're lost on restart, and with several consumers each one holds only part of every feed. Nothing else can read them. *(v3: Postgres)*
 - **The social graph is hardcoded.** *(v3)*
-- **Offsets are auto-committed** on a timer, whether or not fanout finished. A crash can skip or repeat work. *(v4)*
+- **One synchronous commit per message** is simple and correct, but slow at high volume. *(v6: batch commits if the load test shows it matters)*
 - **Malformed messages are dropped**, not kept for inspection. *(v4: dead-letter topic)*
 - **Single Kafka broker.** *(v5)*
 

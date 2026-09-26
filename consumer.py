@@ -25,8 +25,9 @@ FOLLOWERS = {
     "carol": ["alice"],
 }
 
-# In-memory feeds: user -> list of posts.
-feeds: dict[str, list[dict]] = defaultdict(list)
+# In-memory feeds: user -> {post_id: post}.
+# Keyed by post_id so re-processing a message (at-least-once) doesn't duplicate it.
+feeds: dict[str, dict[str, dict]] = defaultdict(dict)
 
 consumer = Consumer({
     "bootstrap.servers": "localhost:9092",
@@ -34,8 +35,10 @@ consumer = Consumer({
     "group.id": os.environ.get("GROUP_ID", "fanout-workers"),
     # Where a brand-new group starts: from the oldest message still in the topic.
     "auto.offset.reset": "earliest",
-    # Offsets are auto-committed every 5s by default, even if processing didn't finish.
-    # Known weakness; fixed in a later step with manual commits.
+    # At-least-once: we commit an offset only after its fanout is done (see main()).
+    # Auto-commit would commit on a timer, whether or not processing finished,
+    # so a crash could skip a post (committed, never fanned out).
+    "enable.auto.commit": False,
 })
 
 
@@ -55,7 +58,7 @@ def handle(msg: Message) -> None:
 
     followers = FOLLOWERS.get(author, [])
     for follower in followers:
-        feeds[follower].append(post)
+        feeds[follower][post_id] = post  # idempotent: same post twice = one entry
     print(f"{where}: {post_id} by {author} -> {', '.join(followers) or '(no followers)'}")
 
 
@@ -64,7 +67,7 @@ def print_feeds() -> None:
     for user in sorted(feeds):
         print(f"\n{user}:")
         # Newest first. Posts from different partitions arrive in any order, so sort by timestamp.
-        for p in sorted(feeds[user], key=lambda p: p["ts"], reverse=True)[:10]:
+        for p in sorted(feeds[user].values(), key=lambda p: p["ts"], reverse=True)[:10]:
             print(f"  [{p['post_id']}] {p['author']}: {p['text']}")
 
 
@@ -80,10 +83,13 @@ def main() -> None:
                 print(f"error: {msg.error()}")
                 continue
             handle(msg)
+            # Fanout is done: now it's safe to mark the message as processed.
+            # If we crash before this line, Kafka re-delivers the message (handled idempotently).
+            consumer.commit(message=msg, asynchronous=False)
     except KeyboardInterrupt:
         pass
     finally:
-        # Commit final offsets and leave the group so partitions are reassigned right away.
+        # Leave the group so partitions are reassigned right away.
         consumer.close()
         print("closed")
         print_feeds()
