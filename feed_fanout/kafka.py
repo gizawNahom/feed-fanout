@@ -5,6 +5,8 @@ from confluent_kafka import KafkaError, KafkaException, Message, Producer
 
 log = logging.getLogger(__name__)
 
+REPLAY_COUNT_HEADER = "dlt.replay_count"  # how many times an event was replayed from the DLT
+
 
 def make_producer(bootstrap_servers: str, message_timeout_ms: int = 10_000) -> Producer:
     return Producer({
@@ -36,7 +38,10 @@ class DeadLetterPublisher:
         The caller commits the original offset right after, so the event must be safely
         in the dead-letter topic first, or it would be lost.
         """
-        headers = list(msg.headers() or []) + [
+        # Keep the event's own headers, but not dlt.* ones from an earlier dead-lettering
+        # (a replayed event that failed again), except the replay count, which travels with it.
+        kept = [(k, v) for k, v in msg.headers() or [] if not k.startswith("dlt.") or k == REPLAY_COUNT_HEADER]
+        headers = kept + [
             ("dlt.reason", reason),
             ("dlt.error", error[:1000]),
             ("dlt.original.topic", msg.topic()),

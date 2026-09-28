@@ -110,12 +110,26 @@ The worker commits an event's offset only once it has been fanned out **or** saf
 
 **Why no retry topic?** Retry topics suit failures that hit *individual* events (say, one rate-limited API call). Our transient failure is the database being down, which is systemic: while it lasts, no event can succeed. Moving events to a retry topic would drain the whole backlog into it and break per-author ordering, for nothing. Pausing and retrying in place loses nothing and keeps order. While backing off, the worker keeps polling with its partitions paused, so Kafka doesn't evict it from the group for being too slow (`max.poll.interval.ms`).
 
-Inspect dead letters in Kafka UI (topic `post-created.dlt`, headers included), or with:
+### Inspecting and replaying dead letters
+
+Browse them in Kafka UI (topic `post-created.dlt`, headers included), or use the replay tool. It runs as a **dry run by default**:
 
 ```bash
-docker exec feed-fanout-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
-  --topic post-created.dlt --from-beginning --formatter-property print.headers=true --formatter-property print.key=true
+uv run python -m feed_fanout.replay_dlt
+#   3 dead letter(s) in post-created.dlt: unexpected=2, malformed=1
+#   would replay: partition 0 offset 4  key=alice  reason=unexpected  replays=0  failed_at=...
+#       error: ValueError('bug')
 ```
+
+Once the cause is fixed (say, the bug fix is deployed), send the events back to their original topic, where they're processed like any new event:
+
+```bash
+uv run python -m feed_fanout.replay_dlt --reason unexpected --execute
+uv run python -m feed_fanout.replay_dlt --from-offset 3 --to-offset 7 --execute
+```
+
+- **Stateless.** It selects by offset range and reason and never commits anything, so a filtered run doesn't use up the dead letters it skipped. Replaying twice is harmless, since fanout is idempotent. The dead-letter topic is never modified.
+- **No infinite loops.** Each replay increments a `dlt.replay_count` header that travels with the event. If a replayed event fails again, it returns to the dead-letter topic with its count (and fresh `dlt.*` headers, not duplicates). After `--max-replays` (default 3) the tool refuses to replay it again unless you pass `--force`.
 
 ## Shutdown and rebalancing
 
@@ -139,7 +153,7 @@ uv run pytest
 
 Integration tests run against **real Postgres and Kafka** in throwaway containers ([testcontainers](https://testcontainers.com/)), using the same images as `docker-compose.yml`. Your dev containers and data are never touched. Each test gets empty tables and its own Kafka topic. The schema is built by running the real Alembic migrations, so the migrations are tested too. Docker must be running.
 
-They cover the behavior that matters: followers receive posts and non-followers don't; replaying an event adds no duplicates; bad events land in the dead-letter topic with their context, and the worker moves on; a database outage is retried until it succeeds; SIGTERM exits promptly, commits finished work and leaves the group (tested against a real subprocess); a worker joining mid-stream loses nothing; feeds are newest-first; and pagination returns every post exactly once, even when timestamps tie.
+They cover the behavior that matters: followers receive posts and non-followers don't; replaying an event adds no duplicates; bad events land in the dead-letter topic with their context, and the worker moves on; dead letters can be replayed once fixed, without looping forever; a database outage is retried until it succeeds; SIGTERM exits promptly, commits finished work and leaves the group (tested against a real subprocess); a worker joining mid-stream loses nothing; feeds are newest-first; and pagination returns every post exactly once, even when timestamps tie.
 
 ## Observability
 
@@ -171,7 +185,6 @@ They cover the behavior that matters: followers receive posts and non-followers 
 
 ## Current limitations
 
-- **No tooling to replay dead letters** back into the main topic yet.
 - **Relay ordering is best-effort.** If one event fails to publish while later ones for the same author succeed, or several relays run at once, an author's events can reach Kafka out of order. Harmless here, since feeds are sorted by `created_at` and fanout is idempotent, but a consumer that needed strict per-author order would need a single relay and to stop at the first failure.
 - **Single Kafka broker; services run outside Docker.** *(v5)*
 
