@@ -103,8 +103,10 @@ The worker commits an event's offset only once it has been fanned out **or** saf
 | Failure | Example | What the worker does |
 |---|---|---|
 | **Permanent** | Malformed event, post doesn't exist | Publishes the event to **`post-created.dlt`** unchanged, with `dlt.*` headers (reason, error, original topic/partition/offset, time), then moves on |
-| **Transient** | Database down, connection lost, deadlock | **Pauses consumption and retries the same event** with exponential backoff and full jitter (random wait up to 1s, 2s, 4s… capped at 30s), indefinitely |
-| **Unexpected** | A bug | Retries 3 times, then dead-letters it with reason `unexpected` |
+| **Transient** | Database unreachable, connection lost, server restarting, deadlock, serialization failure | **Pauses consumption and retries the same event** with exponential backoff and full jitter (random wait up to 1s, 2s, 4s… capped at 30s), indefinitely |
+| **Unexpected** | A bug, a statement timeout, anything not known to be transient | Retries 3 times, then dead-letters it with reason `unexpected` |
+
+**Transient means *narrowly* transient.** Errors are classified by Postgres SQLSTATE, not exception class: a statement timeout is an `OperationalError` just like a refused connection, but it's about *this* event (say, a huge fanout) and would likely time out again. Retried forever, it would block its partition, so only connection errors (no server response, or class `08`), server restarts (`57P0x`), deadlocks and serialization failures (`40P01`, `40001`) count as transient.
 
 **Why no retry topic?** Retry topics suit failures that hit *individual* events (say, one rate-limited API call). Our transient failure is the database being down, which is systemic: while it lasts, no event can succeed. Moving events to a retry topic would drain the whole backlog into it and break per-author ordering, for nothing. Pausing and retrying in place loses nothing and keeps order. While backing off, the worker keeps polling with its partitions paused, so Kafka doesn't evict it from the group for being too slow (`max.poll.interval.ms`).
 

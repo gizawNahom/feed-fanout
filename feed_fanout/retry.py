@@ -24,8 +24,31 @@ class RetryPolicy:
         return rand() * ceiling
 
 
+# Postgres SQLSTATEs worth retrying as-is, besides the whole "08" class (connection exception).
+# https://www.postgresql.org/docs/current/errcodes-appendix.html
+TRANSIENT_SQLSTATES = {
+    "40001",  # serialization_failure: a concurrent transaction won; running again succeeds
+    "40P01",  # deadlock_detected: same
+    "57P01",  # admin_shutdown: server is shutting down or restarting
+    "57P02",  # crash_shutdown
+    "57P03",  # cannot_connect_now: server is starting up
+}
+
+
 def is_transient(e: Exception) -> bool:
-    """Database unavailable, connection dropped, deadlock: worth retrying as-is."""
-    return isinstance(e, OperationalError | InterfaceError) or (
-        isinstance(e, DBAPIError) and e.connection_invalidated
-    )
+    """True if the same operation can succeed later without anything about the event changing.
+
+    Deliberately narrow: transient errors are retried *forever*, so a misclassified error
+    that's really about this one event (say, a statement timeout on a huge fanout) would
+    block its partition for good. Anything not listed here counts as unexpected: retried a
+    few times, then dead-lettered.
+    """
+    if not isinstance(e, DBAPIError):
+        return False
+    if e.connection_invalidated:
+        return True
+    sqlstate = getattr(e.orig, "sqlstate", None)
+    if sqlstate is None:
+        # No response from the server: couldn't connect, or the connection dropped.
+        return isinstance(e, OperationalError | InterfaceError)
+    return sqlstate.startswith("08") or sqlstate in TRANSIENT_SQLSTATES
