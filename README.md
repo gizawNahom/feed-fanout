@@ -226,14 +226,14 @@ They cover the behavior that matters: followers receive posts and non-followers 
 | Health checks | API http://localhost:8000/health/ready · worker http://localhost:8001/health/ready · relay http://localhost:8002/health/ready |
 | Metrics dashboard (Grafana) | http://localhost:3000, with `make up-observability` |
 | Metrics and alerts (Prometheus) | http://localhost:9090, alerts at http://localhost:9090/alerts |
-| Logs | Structured: JSON lines with real fields (see below) |
+| Logs | Structured JSON lines; searchable in Grafana via Loki (see below) |
 
 ### Metrics
 
 Every process exposes Prometheus metrics at `/metrics` (API on :8000, worker on :8001, relay on :8002). Prometheus and a provisioned Grafana dashboard run in an optional Compose profile, so the default stack stays light:
 
 ```bash
-make up-observability     # = docker compose --profile observability up -d --build --wait
+make up-observability     # = docker compose --profile observability up -d --build --wait  (Prometheus, Grafana, Loki, Alloy)
 ```
 
 | Metric | Why it matters |
@@ -265,6 +265,18 @@ Every process logs through [structlog](https://www.structlog.org/): fields are k
 - **Follow one post across processes:** filter on `post_id` instead of grepping text. The worker binds the event's `post_id`, `author_id`, `partition`, and `offset` once per message, so *every* line while handling it (retries, dead-lettering) carries them automatically, and they're unbound afterwards so they never leak into the next message's lines.
 - **One format per process:** uvicorn's access logs and other libraries' logs go through the same pipeline.
 - **Exceptions are one structured field** (`exception: [{exc_type, exc_value, frames…}]`), not a multi-line traceback that log collectors split into separate entries.
+
+**Centralized in Loki** (with `make up-observability`). [Grafana Alloy](https://grafana.com/docs/alloy/) discovers the containers and ships their stdout to [Loki](https://grafana.com/oss/loki/); the apps know nothing about it. The same Grafana shows metrics and logs, and the dashboard's **Logs** row has a `post_id` box: paste an id and see every line about that post from the API and the workers, including containers that have since been replaced. Or query in Grafana's Explore:
+
+```logql
+{service="worker"} | json | post_id="18822c67-…"              # one post, in the workers
+{project="feed-fanout", level=~"warning|error"} | json         # every warning and error
+sum by (service) (count_over_time({project="feed-fanout"}[5m])) # log volume per service
+```
+
+- **Few labels, by design:** streams are labelled only by `service`, `container`, `project`, and `level`. Loki is fast because it indexes little; `post_id` stays in the line and is filtered at query time with `| json`. A `post_id` label would create a stream per post and grind Loki down, the same cardinality rule as for metrics.
+- **3-day retention**, so a laptop's disk doesn't fill up.
+- **Alloy reads the Docker socket** (read-only) to find containers: normal for local development. In production, logs come from the platform's agent instead (e.g. a Kubernetes DaemonSet reading node log files).
 
 ### Health checks
 

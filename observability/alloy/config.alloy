@@ -1,0 +1,58 @@
+// Grafana Alloy: collects every feed-fanout container's stdout and ships it to Loki.
+// The apps don't know Loki exists: they just write JSON lines to stdout.
+
+// Find the containers, through the (read-only) Docker socket.
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s" // default 1m: new containers' logs would show up a minute late
+}
+
+// Keep only this project's containers, and label each stream by compose service.
+// Labels stay low-cardinality (a handful of services, a few levels). Never post_id:
+// that stays in the log line and is filtered at query time with `| json`.
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "feed-fanout.*"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "project"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.levels.receiver]
+}
+
+// Our services log JSON: promote "level" to a label (few distinct values). Lines that
+// aren't JSON (Kafka, Postgres) pass through unchanged, without a level label.
+loki.process "levels" {
+  stage.json {
+    expressions = { level = "level" }
+  }
+  stage.labels {
+    values = { level = "" }
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

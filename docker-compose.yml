@@ -204,6 +204,40 @@ services:
       timeout: 5s
       retries: 6
 
+  # Log store. Queried through Grafana (Explore -> Loki, or the dashboard's logs panels).
+  loki:
+    image: grafana/loki:3.7.8
+    profiles: [observability]
+    command: ["-config.file=/etc/loki/loki.yml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki:/etc/loki:ro
+      - loki-data:/loki
+    # No healthcheck: the image is minimal (no shell, wget or curl). Alloy and Grafana retry.
+
+  # Collects every container's stdout and ships it to Loki. http://localhost:12345 (its UI)
+  alloy:
+    image: grafana/alloy:v1.20.1
+    profiles: [observability]
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./observability/alloy:/etc/alloy:ro
+      # Read-only access to the Docker API, to discover containers and read their logs.
+      # Fine for local development; in production, logs come from the platform's agent
+      # (e.g. a Kubernetes DaemonSet reading node log files).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      loki:
+        condition: service_started
+
   # Dashboards, provisioned from observability/grafana. http://localhost:3000
   grafana:
     image: grafana/grafana:13.0.2
@@ -223,6 +257,8 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+      loki:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 10s
@@ -234,3 +270,5 @@ volumes:
   postgres-data:
   prometheus-data:
   grafana-data:
+  loki-data:
+  alloy-data:
