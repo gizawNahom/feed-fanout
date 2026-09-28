@@ -22,10 +22,10 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 
-from confluent_kafka import Consumer, KafkaError, Message, Producer, TopicPartition
+from confluent_kafka import Consumer, KafkaError, Producer, TopicPartition
 
-from feed_fanout.config import KAFKA_BOOTSTRAP_SERVERS, POST_CREATED_DLT_TOPIC
-from feed_fanout.kafka import REPLAY_COUNT_HEADER, make_producer
+from feed_fanout.config import settings
+from feed_fanout.kafka import REPLAY_COUNT_HEADER, Headers, close_producer, headers_of, make_producer
 
 
 @dataclass(frozen=True)
@@ -56,20 +56,27 @@ class DeadLetter:
 
     def describe(self) -> str:
         key = self.key.decode(errors="replace") if self.key else None
-        return (f"partition {self.partition} offset {self.offset}  key={key}  reason={self.reason}  "
-                f"replays={self.replay_count}  failed_at={self.header('dlt.failed_at')}\n"
-                f"    error: {self.header('dlt.error')[:200]}")
+        return (
+            f"partition {self.partition} offset {self.offset}  key={key}  reason={self.reason}  "
+            f"replays={self.replay_count}  failed_at={self.header('dlt.failed_at')}\n"
+            f"    error: {self.header('dlt.error')[:200]}"
+        )
 
 
 def read_dead_letters(
-    bootstrap_servers: str, topic: str, from_offset: int = 0, to_offset: int | None = None,
+    bootstrap_servers: str,
+    topic: str,
+    from_offset: int = 0,
+    to_offset: int | None = None,
 ) -> list[DeadLetter]:
     """Read dead letters from from_offset up to the end of each partition as of now."""
-    consumer = Consumer({
-        "bootstrap.servers": bootstrap_servers,
-        "group.id": f"dlt-replay-{uuid.uuid4().hex[:8]}",  # required, but never committed
-        "enable.auto.commit": False,
-    })
+    consumer = Consumer(
+        {
+            "bootstrap.servers": bootstrap_servers,
+            "group.id": f"dlt-replay-{uuid.uuid4().hex[:8]}",  # required, but never committed
+            "enable.auto.commit": False,
+        }
+    )
     try:
         partitions = consumer.list_topics(topic, timeout=10).topics[topic].partitions
         ends: dict[int, int] = {}
@@ -90,18 +97,16 @@ def read_dead_letters(
                 raise TimeoutError(f"timed out reading {topic}")
             if msg.error():
                 raise RuntimeError(msg.error())
-            p = msg.partition()
-            if p in ends and msg.offset() < ends[p]:
-                letters.append(_to_dead_letter(msg))
-            if p in ends and msg.offset() >= ends[p] - 1:
+            p, offset = msg.partition(), msg.offset()
+            if p is None or offset is None or p not in ends:
+                continue
+            if offset < ends[p]:
+                letters.append(DeadLetter(p, offset, msg.key(), msg.value(), headers_of(msg)))
+            if offset >= ends[p] - 1:
                 del ends[p]
         return sorted(letters, key=lambda d: (d.partition, d.offset))
     finally:
         consumer.close()
-
-
-def _to_dead_letter(msg: Message) -> DeadLetter:
-    return DeadLetter(msg.partition(), msg.offset(), msg.key(), msg.value(), list(msg.headers() or []))
 
 
 @dataclass
@@ -129,10 +134,13 @@ def replay(
             continue
         result.replayed.append(d)
         if execute:
-            headers = [(k, v) for k, v in d.headers if not k.startswith("dlt.")]
+            headers: Headers = [(k, v) for k, v in d.headers if not k.startswith("dlt.")]
             headers.append((REPLAY_COUNT_HEADER, str(d.replay_count + 1).encode()))
             producer.produce(
-                d.original_topic, key=d.key, value=d.value, headers=headers,
+                d.original_topic,
+                key=d.key,
+                value=d.value,
+                headers=headers,
                 on_delivery=lambda err, _: errors.append(err) if err else None,
             )
     if execute:
@@ -144,8 +152,8 @@ def replay(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--topic", default=POST_CREATED_DLT_TOPIC, help="dead-letter topic to read")
-    parser.add_argument("--bootstrap-servers", default=KAFKA_BOOTSTRAP_SERVERS)
+    parser.add_argument("--topic", default=settings.post_created_dlt_topic, help="dead-letter topic to read")
+    parser.add_argument("--bootstrap-servers", default=settings.kafka_bootstrap_servers)
     parser.add_argument("--from-offset", type=int, default=0)
     parser.add_argument("--to-offset", type=int, default=None, help="inclusive")
     parser.add_argument("--reason", action="append", help="only this reason (repeatable)")
@@ -156,22 +164,26 @@ def main(argv: list[str] | None = None) -> int:
 
     letters = read_dead_letters(args.bootstrap_servers, args.topic, args.from_offset, args.to_offset)
     by_reason = Counter(d.reason for d in letters)
-    print(f"{len(letters)} dead letter(s) in {args.topic}"
-          + (f": {', '.join(f'{r}={n}' for r, n in by_reason.most_common())}" if letters else ""))
+    print(
+        f"{len(letters)} dead letter(s) in {args.topic}"
+        + (f": {', '.join(f'{r}={n}' for r, n in by_reason.most_common())}" if letters else "")
+    )
 
     producer = make_producer(args.bootstrap_servers)
     try:
         result = replay(letters, producer, set(args.reason or []), args.max_replays, args.force, args.execute)
     finally:
-        producer.close()
+        close_producer(producer)
 
     verb = "replayed" if args.execute else "would replay"
     for d in result.replayed:
         print(f"{verb}: {d.describe()}")
     for d in result.over_limit:
         print(f"skipped (replayed {d.replay_count}x already, use --force): {d.describe()}")
-    print(f"{len(result.replayed)} {verb}, {len(result.over_limit)} over the replay limit"
-          + ("" if args.execute else "  (dry run: pass --execute to replay)"))
+    print(
+        f"{len(result.replayed)} {verb}, {len(result.over_limit)} over the replay limit"
+        + ("" if args.execute else "  (dry run: pass --execute to replay)")
+    )
     return 0
 
 

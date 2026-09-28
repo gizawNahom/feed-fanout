@@ -15,7 +15,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from confluent_kafka import Consumer, Message
-from confluent_kafka.admin import AdminClient, NewTopic
+from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]  # stubs lack the re-export
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -28,11 +28,12 @@ from feed_fanout.relay import OutboxRelay
 from feed_fanout.retry import RetryPolicy
 from feed_fanout.worker import FanoutWorker, Outcome, make_consumer
 
-KAFKA_IMAGE = "apache/kafka:4.3.1"       # same images as docker-compose.yml
+KAFKA_IMAGE = "apache/kafka:4.3.1"  # same images as docker-compose.yml
 POSTGRES_IMAGE = "postgres:18.6-alpine"
 
 
 # --- Containers (once per session) -------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def postgres_url() -> Iterator[str]:
@@ -48,7 +49,8 @@ def postgres_url() -> Iterator[str]:
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 @pytest.fixture(scope="session")
@@ -99,6 +101,7 @@ def _wait_for_kafka(bootstrap: str, timeout: float = 60) -> None:
 
 
 # --- Per-test fixtures -------------------------------------------------------
+
 
 @pytest.fixture(scope="session")
 def engine(postgres_url: str) -> Iterator[Engine]:
@@ -190,6 +193,7 @@ def relay(kafka_bootstrap: str, session_factory: sessionmaker[Session]) -> Itera
 @pytest.fixture
 def client(session_factory: sessionmaker[Session], topic: str) -> Iterator[TestClient]:
     """The FastAPI app, wired to the test database. Its outbox events target the test topic."""
+
     def test_session() -> Iterator[Session]:
         with session_factory() as session:
             yield session
@@ -223,8 +227,13 @@ class Worker:
 
 
 @pytest.fixture
-def worker(kafka_bootstrap: str, topic: str, session_factory: sessionmaker[Session],
-           relay: OutboxRelay, dead_letters: DeadLetterPublisher) -> Iterator[Worker]:
+def worker(
+    kafka_bootstrap: str,
+    topic: str,
+    session_factory: sessionmaker[Session],
+    relay: OutboxRelay,
+    dead_letters: DeadLetterPublisher,
+) -> Iterator[Worker]:
     consumer = make_consumer(kafka_bootstrap, group_id=f"test-{uuid.uuid4().hex[:8]}")
     consumer.subscribe([topic])
     yield Worker(FanoutWorker(consumer, session_factory, dead_letters, FAST_RETRY), relay)

@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from confluent_kafka import Producer, TopicPartition
+from confluent_kafka import Message, Producer, TopicPartition
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import feed_fanout.worker
 from feed_fanout.events import PostCreated
+from feed_fanout.kafka import close_producer, headers_of
 from feed_fanout.models import FeedItem
 from feed_fanout.worker import Outcome, PermanentError, handle
 from tests.conftest import TopicReader, Worker
@@ -27,14 +28,15 @@ def produce_raw(bootstrap: str, topic: str, key: str, value: bytes) -> None:
     producer = Producer({"bootstrap.servers": bootstrap, "partitioner": "murmur2_random"})
     producer.produce(topic, key=key, value=value)
     producer.flush(10)
-    producer.close()
+    close_producer(producer)
 
 
-def headers(msg) -> dict[str, str]:
-    return {k: v.decode() for k, v in msg.headers() or []}
+def headers(msg: Message) -> dict[str, str]:
+    return {k: v.decode() for k, v in headers_of(msg)}
 
 
 # --- Happy path --------------------------------------------------------------
+
 
 def test_followers_see_post_after_fanout(client: TestClient, worker: Worker) -> None:
     # Given bob and carol follow alice
@@ -93,6 +95,7 @@ def test_reprocessing_same_event_adds_no_duplicates(
 
 # --- Permanent failures: dead-letter topic -----------------------------------
 
+
 @pytest.mark.parametrize("value", [b"not json", b'{"post_id": "p1", "author": "alice"}', b"", None])
 def test_malformed_payload_is_a_permanent_error(value: bytes | None, session_factory: sessionmaker[Session]) -> None:
     with pytest.raises(PermanentError) as e:
@@ -127,15 +130,17 @@ def test_offset_is_committed_after_dead_lettering(
     worker.process_next()
     read_dead_letters(1)
 
-    committed = worker.fanout.consumer.committed(
-        [TopicPartition(topic, p) for p in range(3)], timeout=10
-    )
+    committed = worker.fanout.consumer.committed([TopicPartition(topic, p) for p in range(3)], timeout=10)
     assert sorted(tp.offset for tp in committed if tp.offset >= 0) == [1]
 
 
 def test_event_for_unknown_post_is_dead_lettered(
-    client: TestClient, worker: Worker, read_dead_letters: TopicReader,
-    session_factory: sessionmaker[Session], kafka_bootstrap: str, topic: str,
+    client: TestClient,
+    worker: Worker,
+    read_dead_letters: TopicReader,
+    session_factory: sessionmaker[Session],
+    kafka_bootstrap: str,
+    topic: str,
 ) -> None:
     follow(client, "bob", "alice")
     event = PostCreated(post_id=uuid.uuid4(), author_id="alice", created_at=datetime.now(UTC))
@@ -166,6 +171,7 @@ def test_worker_keeps_going_after_a_dead_lettered_event(
 
 
 # --- Transient and unexpected failures: retry --------------------------------
+
 
 def failing_n_times(n: int, error: Exception, monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Make fan_out raise `error` for its first n calls, then behave normally."""

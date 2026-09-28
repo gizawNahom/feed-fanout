@@ -1,5 +1,7 @@
 """The outbox relay: moves events from Postgres to Kafka without losing any."""
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -29,7 +31,7 @@ def test_relay_publishes_pending_events_and_removes_them(
 
     # Then both events are in Kafka, keyed by author, and the outbox is empty
     assert result == BatchResult(published=2, failed=0)
-    published = {m.key().decode(): PostCreated.model_validate_json(m.value()) for m in read_topic(2)}
+    published = {(m.key() or b"").decode(): PostCreated.model_validate_json(m.value() or b"") for m in read_topic(2)}
     assert str(published["alice"].post_id) == first["id"]
     assert str(published["bob"].post_id) == second["id"]
     assert outbox_size(session_factory) == 0
@@ -39,9 +41,7 @@ def test_relay_with_nothing_to_do(relay: OutboxRelay) -> None:
     assert relay.publish_batch() == BatchResult(published=0, failed=0)
 
 
-def test_failed_publish_keeps_the_event_for_retry(
-    relay: OutboxRelay, session_factory: sessionmaker[Session]
-) -> None:
+def test_failed_publish_keeps_the_event_for_retry(relay: OutboxRelay, session_factory: sessionmaker[Session]) -> None:
     # Given an event whose publish will fail (its topic doesn't exist; auto-create is off)
     with session_factory.begin() as session:
         session.add(OutboxEvent(topic="no-such-topic", key="alice", payload="{}"))
@@ -86,7 +86,8 @@ def test_api_does_not_depend_on_kafka() -> None:
     # Posting only writes to Postgres, so it keeps working while Kafka is down.
     # Checked structurally: the API module never imports a Kafka client.
     import feed_fanout.api as api
-    source = open(api.__file__).read()
+
+    source = Path(api.__file__).read_text()
     assert "confluent_kafka" not in source and "feed_fanout.kafka" not in source
 
 

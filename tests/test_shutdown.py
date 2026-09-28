@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable, Iterator
 
 import pytest
-from confluent_kafka import ConsumerGroupTopicPartitions, KafkaError, KafkaException, Message
+from confluent_kafka import ConsumerGroupTopicPartitions, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -62,7 +62,10 @@ class WorkerProcess:
     def __init__(self, env: dict[str, str]) -> None:
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "feed_fanout.worker"],
-            env={**os.environ, **env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env={**os.environ, **env},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
         self.lines: list[str] = []
         threading.Thread(target=self._read, daemon=True).start()
@@ -92,16 +95,20 @@ def group_id() -> str:
 
 
 @pytest.fixture
-def spawn_worker(kafka_bootstrap: str, topic: str, dlt_topic: str, group_id: str) -> Iterator[Callable[..., WorkerProcess]]:
+def spawn_worker(
+    kafka_bootstrap: str, topic: str, dlt_topic: str, group_id: str
+) -> Iterator[Callable[..., WorkerProcess]]:
     processes: list[WorkerProcess] = []
 
     def spawn(database_url: str) -> WorkerProcess:
-        p = WorkerProcess({
-            "KAFKA_BOOTSTRAP_SERVERS": kafka_bootstrap,
-            "DATABASE_URL": database_url,
-            "POST_CREATED_TOPIC": topic,  # its dead-letter topic is f"{topic}.dlt" = dlt_topic
-            "FANOUT_GROUP_ID": group_id,
-        })
+        p = WorkerProcess(
+            {
+                "KAFKA_BOOTSTRAP_SERVERS": kafka_bootstrap,
+                "DATABASE_URL": database_url,
+                "POST_CREATED_TOPIC": topic,  # its dead-letter topic is f"{topic}.dlt" = dlt_topic
+                "FANOUT_GROUP_ID": group_id,
+            }
+        )
         processes.append(p)
         return p
 
@@ -112,9 +119,16 @@ def spawn_worker(kafka_bootstrap: str, topic: str, dlt_topic: str, group_id: str
 
 # --- SIGTERM ------------------------------------------------------------------
 
+
 def test_sigterm_exits_promptly_commits_and_leaves_the_group(
-    client: TestClient, relay: OutboxRelay, spawn_worker, postgres_url: str,
-    session_factory: sessionmaker[Session], kafka_bootstrap: str, topic: str, group_id: str,
+    client: TestClient,
+    relay: OutboxRelay,
+    spawn_worker,
+    postgres_url: str,
+    session_factory: sessionmaker[Session],
+    kafka_bootstrap: str,
+    topic: str,
+    group_id: str,
 ) -> None:
     # Given a running worker that has fanned out one post
     follow(client, "bob", "alice")
@@ -138,10 +152,14 @@ def test_sigterm_exits_promptly_commits_and_leaves_the_group(
 
 
 def test_sigterm_during_retries_exits_promptly_without_committing(
-    spawn_worker, kafka_bootstrap: str, topic: str, group_id: str,
+    spawn_worker,
+    kafka_bootstrap: str,
+    topic: str,
+    group_id: str,
 ) -> None:
     # Given a worker stuck retrying an event because the database is unreachable
     from tests.test_fanout import produce_raw
+
     event = PostCreated(post_id=uuid.uuid4(), author_id="alice", created_at="2026-01-01T00:00:00Z")
     produce_raw(kafka_bootstrap, topic, key="alice", value=event.model_dump_json().encode())
     worker = spawn_worker("postgresql+psycopg://nobody:nothing@localhost:1/none")  # nothing listens here
@@ -170,6 +188,7 @@ def test_second_sigterm_forces_exit(spawn_worker, postgres_url: str) -> None:
 
 # --- In-process stop (relay and worker) ---------------------------------------
 
+
 def test_relay_stops_promptly(relay: OutboxRelay) -> None:
     thread = threading.Thread(target=relay.run, kwargs={"idle_interval": 30})
     thread.start()
@@ -182,6 +201,7 @@ def test_relay_stops_promptly(relay: OutboxRelay) -> None:
 
 
 # --- Rebalances ---------------------------------------------------------------
+
 
 class RejectingCommits:
     """A consumer whose commits fail as if the partition had just been reassigned."""
@@ -199,7 +219,10 @@ class RejectingCommits:
 
 @pytest.mark.parametrize("code", [KafkaError.STALE_MEMBER_EPOCH, KafkaError.ILLEGAL_GENERATION])
 def test_commit_rejected_after_reassignment_does_not_crash(
-    code: int, client: TestClient, worker, session_factory: sessionmaker[Session],
+    code: int,
+    client: TestClient,
+    worker,
+    session_factory: sessionmaker[Session],
 ) -> None:
     # The event was fanned out, but the partition moved before the commit. The new owner
     # will re-process it; fanout is idempotent, so the worker just logs and carries on.
@@ -220,8 +243,13 @@ def test_unrelated_commit_error_still_raises(client: TestClient, worker) -> None
 
 
 def test_worker_joining_mid_stream_loses_nothing(
-    client: TestClient, relay: OutboxRelay, session_factory: sessionmaker[Session],
-    kafka_bootstrap: str, topic: str, dlt_topic: str, group_id: str,
+    client: TestClient,
+    relay: OutboxRelay,
+    session_factory: sessionmaker[Session],
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
+    group_id: str,
 ) -> None:
     # Given one worker consuming, with posts from many authors (spread over all partitions)
     authors = [f"author{i}" for i in range(12)]
@@ -229,8 +257,12 @@ def test_worker_joining_mid_stream_loses_nothing(
         follow(client, "reader", a)
 
     def start_worker() -> tuple[FanoutWorker, threading.Thread]:
-        w = FanoutWorker(make_consumer(kafka_bootstrap, group_id), session_factory,
-                         DeadLetterPublisher(kafka_bootstrap, dlt_topic), FAST_RETRY)
+        w = FanoutWorker(
+            make_consumer(kafka_bootstrap, group_id),
+            session_factory,
+            DeadLetterPublisher(kafka_bootstrap, dlt_topic),
+            FAST_RETRY,
+        )
         t = threading.Thread(target=w.run, args=(topic,))
         t.start()
         return w, t

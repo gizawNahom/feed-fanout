@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from feed_fanout.events import PostCreated
-from feed_fanout.kafka import make_producer
+from feed_fanout.kafka import close_producer, make_producer
 from feed_fanout.models import FeedItem, Follow, Post
 from feed_fanout.replay_dlt import main, read_dead_letters, replay
 from feed_fanout.worker import Outcome
@@ -23,7 +23,7 @@ from tests.test_fanout import produce_raw
 def producer(kafka_bootstrap: str):
     producer = make_producer(kafka_bootstrap)
     yield producer
-    producer.close()
+    close_producer(producer)
 
 
 def feed_rows(session_factory: sessionmaker[Session]) -> int:
@@ -56,8 +56,13 @@ def fix_by_creating(session_factory: sessionmaker[Session], event: PostCreated) 
 
 
 def test_replay_after_fixing_the_cause_fans_out(
-    client: TestClient, worker: Worker, producer, session_factory: sessionmaker[Session],
-    kafka_bootstrap: str, topic: str, dlt_topic: str,
+    client: TestClient,
+    worker: Worker,
+    producer,
+    session_factory: sessionmaker[Session],
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
 ) -> None:
     # Given a dead-lettered event whose cause has since been fixed
     follow(client, "bob", "alice")
@@ -74,7 +79,12 @@ def test_replay_after_fixing_the_cause_fans_out(
 
 
 def test_dry_run_changes_nothing(
-    worker: Worker, producer, read_topic: TopicReader, kafka_bootstrap: str, topic: str, dlt_topic: str,
+    worker: Worker,
+    producer,
+    read_topic: TopicReader,
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
 ) -> None:
     dead_letter_garbage(worker, kafka_bootstrap, topic)
     read_topic(1)  # the original garbage message
@@ -82,11 +92,15 @@ def test_dry_run_changes_nothing(
     result = replay(read_dead_letters(kafka_bootstrap, dlt_topic), producer)  # execute=False
 
     assert len(result.replayed) == 1  # reported...
-    read_topic.nothing_more()         # ...but not sent
+    read_topic.nothing_more()  # ...but not sent
 
 
 def test_filter_by_reason(
-    worker: Worker, producer, kafka_bootstrap: str, topic: str, dlt_topic: str,
+    worker: Worker,
+    producer,
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
 ) -> None:
     dead_letter_garbage(worker, kafka_bootstrap, topic)
     dead_letter_unknown_post(worker, kafka_bootstrap, topic)
@@ -106,7 +120,11 @@ def test_filter_by_offset_range(worker: Worker, kafka_bootstrap: str, topic: str
 
 
 def test_failing_again_returns_with_count_and_clean_headers(
-    worker: Worker, producer, kafka_bootstrap: str, topic: str, dlt_topic: str,
+    worker: Worker,
+    producer,
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
 ) -> None:
     # Given a dead letter that is still broken
     dead_letter_garbage(worker, kafka_bootstrap, topic)
@@ -124,7 +142,11 @@ def test_failing_again_returns_with_count_and_clean_headers(
 
 
 def test_replay_limit_stops_loops_unless_forced(
-    worker: Worker, producer, kafka_bootstrap: str, topic: str, dlt_topic: str,
+    worker: Worker,
+    producer,
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
 ) -> None:
     # Given a still-broken event that has bounced back max_replays times
     dead_letter_garbage(worker, kafka_bootstrap, topic)
@@ -144,8 +166,13 @@ def test_replay_limit_stops_loops_unless_forced(
 
 
 def test_replaying_twice_adds_no_duplicates(
-    client: TestClient, worker: Worker, producer, session_factory: sessionmaker[Session],
-    kafka_bootstrap: str, topic: str, dlt_topic: str,
+    client: TestClient,
+    worker: Worker,
+    producer,
+    session_factory: sessionmaker[Session],
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
 ) -> None:
     follow(client, "bob", "alice")
     event = dead_letter_unknown_post(worker, kafka_bootstrap, topic)
@@ -161,7 +188,11 @@ def test_replaying_twice_adds_no_duplicates(
 
 
 def test_cli_dry_run_summary(
-    worker: Worker, kafka_bootstrap: str, topic: str, dlt_topic: str, capsys: pytest.CaptureFixture[str],
+    worker: Worker,
+    kafka_bootstrap: str,
+    topic: str,
+    dlt_topic: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     dead_letter_garbage(worker, kafka_bootstrap, topic)
     dead_letter_unknown_post(worker, kafka_bootstrap, topic)

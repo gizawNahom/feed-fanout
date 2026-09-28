@@ -1,11 +1,9 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
-from feed_fanout.config import DATABASE_URL
+from feed_fanout.config import settings
 from feed_fanout.models import Base
 
 # this is the Alembic Config object, which provides
@@ -25,7 +23,7 @@ target_metadata = Base.metadata
 # Use the app's database URL (env var DATABASE_URL, or the local default), unless the caller
 # already set one programmatically (the tests do, to migrate their throwaway database).
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", DATABASE_URL)
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -71,9 +69,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

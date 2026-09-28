@@ -9,8 +9,8 @@ from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 
 @dataclass(frozen=True)
 class RetryPolicy:
-    base_delay: float = 1.0          # backoff ceiling for the first retry, doubled each attempt...
-    max_delay: float = 30.0          # ...up to this cap
+    base_delay: float = 1.0  # backoff ceiling for the first retry, doubled each attempt...
+    max_delay: float = 30.0  # ...up to this cap
     max_unexpected_attempts: int = 3  # unexpected errors: give up and dead-letter after this many
 
     def delay(self, attempt: int, rand: Callable[[], float] = random.random) -> float:
@@ -20,8 +20,11 @@ class RetryPolicy:
         of them) retry together, hitting the recovering database in synchronized waves
         (a "thundering herd"). Randomizing spreads the retries out.
         """
-        ceiling = min(self.base_delay * 2 ** (attempt - 1), self.max_delay)
+        ceiling = min(self.base_delay * 2.0 ** (attempt - 1), self.max_delay)
         return rand() * ceiling
+
+
+DEFAULT_RETRY = RetryPolicy()
 
 
 # Postgres SQLSTATEs worth retrying as-is, besides the whole "08" class (connection exception).

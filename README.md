@@ -1,5 +1,7 @@
 # feed-fanout
 
+[![CI](https://github.com/gizawNahom/feed-fanout/actions/workflows/ci.yml/badge.svg)](https://github.com/gizawNahom/feed-fanout/actions/workflows/ci.yml)
+
 How Facebook's News Feed delivers posts, built step by step: from an in-memory queue to a production-grade, fault-tolerant pipeline.
 
 System design interviews talk about queues, workers, and "fanout-on-write" through boxes and arrows. This repo turns that diagram into code you can run. The project grows in tagged versions. Each version adds one layer and fixes what broke in the one before it.
@@ -37,7 +39,7 @@ GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (new
 | [v2-kafka](https://github.com/gizawNahom/feed-fanout/tree/v2-kafka) | Kafka as the queue; separate producer and worker processes; at-least-once commits | Queued work survives crashes; workers scale independently |
 | [v3-service](https://github.com/gizawNahom/feed-fanout/tree/v3-service) | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations + integration tests | A real API; feeds are shared, persistent, and paginated |
 | [v4-reliable](https://github.com/gizawNahom/feed-fanout/tree/v4-reliable) | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown, incremental rebalancing | Never lose or duplicate a post |
-| v5-ops *(next)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
+| **v5-ops** *(in progress)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
 | v6-scale *(planned)* | Metrics, load testing, caching, celebrity handling | Measured performance |
 
 ## Quick start
@@ -144,6 +146,31 @@ Workers use Kafka's **new consumer rebalance protocol** (`group.protocol=consume
 If a partition is reassigned between a worker fanning out an event and committing it, the commit is rejected. The worker logs it and moves on: the new owner re-processes the event from the last committed offset, and fanout is idempotent. While backing off, the worker resumes whatever it owns *after* the wait, since a rebalance may have changed it.
 
 *Not done:* static membership (`group.instance.id`), which lets a worker restarted within the session timeout rejoin without any rebalance. It's worth it for rolling deploys once the services are deployed (v5).
+
+## Configuration
+
+All settings come from environment variables (or a `.env` file; see [`.env.example`](.env.example)), with defaults that match `docker-compose.yml`:
+
+| Variable | Default |
+|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| `DATABASE_URL` | `postgresql+psycopg://feed:feed@localhost:5432/feed` |
+| `POST_CREATED_TOPIC` | `post-created` (dead letters go to `<topic>.dlt`) |
+| `FANOUT_GROUP_ID` | `fanout-workers` |
+| `LOG_LEVEL` | `INFO` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+
+Settings are validated at startup ([pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)), so a typo like `LOG_LEVEL=VERBOSE` fails immediately with a clear error.
+
+## Development
+
+```bash
+uv run pytest                    # tests (needs Docker)
+uv run ruff check .              # lint
+uv run ruff format .             # format
+uv run mypy feed_fanout tests    # types (strict)
+```
+
+CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14.
 
 ## Tests
 

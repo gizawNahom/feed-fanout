@@ -14,9 +14,9 @@ def install_signal_handlers(stop: Callable[[], None]) -> None:
     stop() only sets a flag: the process finishes what it's doing, cleans up, and exits.
     A second signal falls back to the default behavior and exits immediately.
     """
+
     def handler(signum: int, _frame: FrameType | None) -> None:
-        log.info("received %s: finishing current work, then exiting (repeat to force)",
-                 signal.Signals(signum).name)
+        log.info("received %s: finishing current work, then exiting (repeat to force)", signal.Signals(signum).name)
         stop()
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         signal.signal(signal.SIGINT, signal.default_int_handler)

@@ -10,7 +10,8 @@ def follow(client: TestClient, follower: str, followee: str) -> None:
 def create_post(client: TestClient, author: str, text: str = "hello") -> dict[str, Any]:
     response = client.post("/posts", json={"author_id": author, "text": text})
     assert response.status_code == 201
-    return response.json()
+    body: dict[str, Any] = response.json()
+    return body
 
 
 def feed_ids(client: TestClient, user: str, **params: Any) -> list[str]:

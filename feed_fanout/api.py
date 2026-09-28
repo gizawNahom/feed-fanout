@@ -18,12 +18,12 @@ from sqlalchemy import delete, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from feed_fanout.config import POST_CREATED_TOPIC
+from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
 from feed_fanout.models import FeedItem, Follow, OutboxEvent, Post
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("feed_fanout.api")
 
 
@@ -37,7 +37,7 @@ def get_session() -> Iterator[Session]:
 
 def get_post_created_topic() -> str:
     """Topic the outbox relay publishes PostCreated events to. Overridden in tests."""
-    return POST_CREATED_TOPIC
+    return settings.post_created_topic
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -46,6 +46,7 @@ UserId = Annotated[str, Field(min_length=1, max_length=64)]
 
 
 # --- Schemas ----------------------------------------------------------------
+
 
 class CreatePost(BaseModel):
     author_id: UserId
@@ -68,6 +69,7 @@ class FeedPage(BaseModel):
 
 # --- Posts ------------------------------------------------------------------
 
+
 @app.post("/posts", status_code=status.HTTP_201_CREATED)
 def create_post(body: CreatePost, session: SessionDep, topic: TopicDep) -> PostOut:
     post = Post(author_id=body.author_id, text=body.text)
@@ -86,14 +88,13 @@ def create_post(body: CreatePost, session: SessionDep, topic: TopicDep) -> PostO
 
 # --- Follows ----------------------------------------------------------------
 
+
 @app.put("/users/{user_id}/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
 def follow(user_id: str, followee_id: str, session: SessionDep) -> Response:
     """Idempotent: following someone you already follow is a no-op."""
     if user_id == followee_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "users cannot follow themselves")
-    session.execute(
-        insert(Follow).values(follower_id=user_id, followee_id=followee_id).on_conflict_do_nothing()
-    )
+    session.execute(insert(Follow).values(follower_id=user_id, followee_id=followee_id).on_conflict_do_nothing())
     session.commit()
     log.info("follow follower_id=%s followee_id=%s", user_id, followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -108,6 +109,7 @@ def unfollow(user_id: str, followee_id: str, session: SessionDep) -> Response:
 
 
 # --- Feed -------------------------------------------------------------------
+
 
 def _encode_cursor(created_at: datetime, post_id: uuid.UUID) -> str:
     return base64.urlsafe_b64encode(f"{created_at.isoformat()}|{post_id}".encode()).decode()

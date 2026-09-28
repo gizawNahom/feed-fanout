@@ -8,6 +8,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 import feed_fanout.worker
+from feed_fanout.kafka import headers_of
 from feed_fanout.retry import is_transient
 from feed_fanout.worker import Outcome
 from tests.conftest import TopicReader, Worker
@@ -33,7 +34,7 @@ def test_statement_timeout_is_not_transient(engine: Engine) -> None:
     error = raised_by(engine, "SET statement_timeout = 10; SELECT pg_sleep(1)")
 
     assert isinstance(error, OperationalError)  # same exception class as a connection failure...
-    assert error.orig.sqlstate == "57014"        # ...told apart by its SQLSTATE
+    assert getattr(error.orig, "sqlstate", None) == "57014"  # ...told apart by its SQLSTATE
     assert not is_transient(error)
 
 
@@ -52,8 +53,12 @@ def test_non_database_errors_are_not_transient() -> None:
 
 
 def test_statement_timeout_during_fanout_is_dead_lettered(
-    client: TestClient, worker: Worker, read_dead_letters: TopicReader,
-    session_factory: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch, engine: Engine,
+    client: TestClient,
+    worker: Worker,
+    read_dead_letters: TopicReader,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    engine: Engine,
 ) -> None:
     # Given fanout queries that always hit the statement timeout (e.g. a huge fanout)
     timeout = raised_by(engine, "SET statement_timeout = 10; SELECT pg_sleep(1)")
@@ -71,6 +76,4 @@ def test_statement_timeout_during_fanout_is_dead_lettered(
     assert worker.process_next() == Outcome.DEAD_LETTERED
     assert len(calls) == 3
     [dead] = read_dead_letters(1)
-    assert dict((k, v.decode()) for k, v in dead.headers())["dlt.reason"] == "unexpected"
-
-
+    assert dict((k, v.decode()) for k, v in headers_of(dead))["dlt.reason"] == "unexpected"

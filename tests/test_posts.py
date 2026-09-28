@@ -2,10 +2,9 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session, sessionmaker
-
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm import Session, sessionmaker
 
 from feed_fanout.api import app, get_post_created_topic
 from feed_fanout.events import PostCreated
@@ -25,8 +24,9 @@ def test_create_post_saves_it(client: TestClient, session_factory: sessionmaker[
     assert saved.text == "hello"
 
 
-def test_create_post_writes_event_to_outbox(client: TestClient, session_factory: sessionmaker[Session],
-                                             topic: str) -> None:
+def test_create_post_writes_event_to_outbox(
+    client: TestClient, session_factory: sessionmaker[Session], topic: str
+) -> None:
     post = client.post("/posts", json={"author_id": "alice", "text": "hello"}).json()
 
     with session_factory() as session:
@@ -52,14 +52,18 @@ def test_post_and_event_are_saved_atomically(client: TestClient, session_factory
         assert session.scalars(select(OutboxEvent)).all() == []
 
 
-@pytest.mark.parametrize("body", [
-    {"author_id": "alice", "text": ""},
-    {"author_id": "", "text": "hello"},
-    {"author_id": "alice"},
-    {"author_id": "alice", "text": "x" * 5001},
-])
-def test_invalid_post_is_rejected(client: TestClient, body: dict[str, str],
-                                  session_factory: sessionmaker[Session]) -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"author_id": "alice", "text": ""},
+        {"author_id": "", "text": "hello"},
+        {"author_id": "alice"},
+        {"author_id": "alice", "text": "x" * 5001},
+    ],
+)
+def test_invalid_post_is_rejected(
+    client: TestClient, body: dict[str, str], session_factory: sessionmaker[Session]
+) -> None:
     assert client.post("/posts", json=body).status_code == 422
     with session_factory() as session:
         assert session.scalars(select(OutboxEvent)).all() == []

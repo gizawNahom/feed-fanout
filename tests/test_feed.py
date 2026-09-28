@@ -39,7 +39,9 @@ def walk_pages(client: TestClient, user: str, limit: int) -> list[list[str]]:
 
 
 def test_feed_is_newest_first(client: TestClient, session_factory: sessionmaker[Session]) -> None:
-    oldest, middle, newest = seed_feed(session_factory, "bob", [T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)])
+    oldest, middle, newest = seed_feed(
+        session_factory, "bob", [T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)]
+    )
 
     assert feed_ids(client, "bob") == [newest, middle, oldest]
 

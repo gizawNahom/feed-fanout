@@ -16,17 +16,18 @@ again on restart. The worker's fanout is idempotent, so duplicates are harmless.
 
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from confluent_kafka import KafkaError, Message, Producer
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.config import KAFKA_BOOTSTRAP_SERVERS
+from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
-from feed_fanout.kafka import make_producer
+from feed_fanout.kafka import close_producer, make_producer
 from feed_fanout.models import OutboxEvent
-from feed_fanout.retry import RetryPolicy
+from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy
 from feed_fanout.shutdown import install_signal_handlers
 
 log = logging.getLogger("feed_fanout.relay")
@@ -61,10 +62,7 @@ class OutboxRelay:
         """Publish up to batch_size pending events. Only acknowledged events are removed."""
         with self.session_factory.begin() as session:
             rows = session.scalars(
-                select(OutboxEvent)
-                .order_by(OutboxEvent.id)
-                .limit(self.batch_size)
-                .with_for_update(skip_locked=True)
+                select(OutboxEvent).order_by(OutboxEvent.id).limit(self.batch_size).with_for_update(skip_locked=True)
             ).all()
             if not rows:
                 return BatchResult(0, 0)
@@ -72,7 +70,9 @@ class OutboxRelay:
             errors: dict[int, KafkaError | None] = {}
             for row in rows:
                 self.producer.produce(
-                    row.topic, key=row.key, value=row.payload,
+                    row.topic,
+                    key=row.key,
+                    value=row.payload,
                     on_delivery=self._record(errors, row.id),
                 )
             # message.timeout.ms < flush_timeout, so every message is resolved (delivered or
@@ -85,20 +85,26 @@ class OutboxRelay:
             failed = len(rows) - len(delivered)
             for row in rows:
                 if errors.get(row.id) is not None:
-                    log.warning("publish failed outbox_id=%s topic=%s key=%s error=%s",
-                                row.id, row.topic, row.key, errors[row.id])
+                    log.warning(
+                        "publish failed outbox_id=%s topic=%s key=%s error=%s",
+                        row.id,
+                        row.topic,
+                        row.key,
+                        errors[row.id],
+                    )
         # Committed: acknowledged rows are gone; failed ones stay for the next attempt.
         if delivered:
             log.info("published %d event(s)", len(delivered))
         return BatchResult(len(delivered), failed)
 
     @staticmethod
-    def _record(errors: dict[int, KafkaError | None], row_id: int):
+    def _record(errors: dict[int, KafkaError | None], row_id: int) -> Callable[[KafkaError | None, Message], None]:
         def on_delivery(err: KafkaError | None, _msg: Message) -> None:
             errors[row_id] = err
+
         return on_delivery
 
-    def run(self, idle_interval: float = 0.5, retry: RetryPolicy = RetryPolicy()) -> None:
+    def run(self, idle_interval: float = 0.5, retry: RetryPolicy = DEFAULT_RETRY) -> None:
         """Publish until stopped. Polls every idle_interval when there's nothing to do."""
         log.info("relaying outbox")
         failures = 0
@@ -128,13 +134,13 @@ class OutboxRelay:
             return
         self._closed = True
         self.producer.flush(self.flush_timeout)
-        self.producer.close()
+        close_producer(self.producer)
         log.info("closed")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    relay = OutboxRelay(SessionLocal, make_producer(KAFKA_BOOTSTRAP_SERVERS))
+    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    relay = OutboxRelay(SessionLocal, make_producer(settings.kafka_bootstrap_servers))
     install_signal_handlers(relay.stop)
     relay.run()
 

@@ -25,17 +25,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.config import (
-    FANOUT_GROUP_ID,
-    KAFKA_BOOTSTRAP_SERVERS,
-    POST_CREATED_DLT_TOPIC,
-    POST_CREATED_TOPIC,
-)
+from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
 from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.models import FeedItem, Follow
-from feed_fanout.retry import RetryPolicy, is_transient
+from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy, is_transient
 from feed_fanout.shutdown import install_signal_handlers
 
 log = logging.getLogger("feed_fanout.worker")
@@ -92,8 +87,7 @@ def handle(value: bytes | None, session_factory: sessionmaker[Session], where: s
         if getattr(e.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
             raise PermanentError("unknown_post", f"post {event.post_id} does not exist") from e
         raise
-    log.info("fanned out post_id=%s author_id=%s feeds_added=%d %s",
-             event.post_id, event.author_id, added, where)
+    log.info("fanned out post_id=%s author_id=%s feeds_added=%d %s", event.post_id, event.author_id, added, where)
     return added
 
 
@@ -116,7 +110,7 @@ class FanoutWorker:
         consumer: Consumer,
         session_factory: sessionmaker[Session],
         dead_letters: DeadLetterPublisher,
-        retry: RetryPolicy = RetryPolicy(),
+        retry: RetryPolicy = DEFAULT_RETRY,
     ) -> None:
         self.consumer = consumer
         self.session_factory = session_factory
@@ -149,8 +143,13 @@ class FanoutWorker:
                     outcome = Outcome.DEAD_LETTERED
                     break
                 delay = self.retry.delay(attempt)
-                log.warning("attempt %d failed (%s), retrying in %.1fs %s",
-                            attempt, "transient" if is_transient(e) else "unexpected", delay, where)
+                log.warning(
+                    "attempt %d failed (%s), retrying in %.1fs %s",
+                    attempt,
+                    "transient" if is_transient(e) else "unexpected",
+                    delay,
+                    where,
+                )
                 self._wait(delay)
                 if self._stopping.is_set():
                     # Shutting down mid-retry: leave the offset uncommitted so the event is
@@ -168,9 +167,12 @@ class FanoutWorker:
         except KafkaException as e:
             if e.args[0].code() not in REASSIGNED_ERRORS:
                 raise
-            log.warning("commit rejected, partition was reassigned; the new owner will "
-                        "re-process this event (harmless: fanout is idempotent) %s error=%s",
-                        where, e.args[0].name())
+            log.warning(
+                "commit rejected, partition was reassigned; the new owner will "
+                "re-process this event (harmless: fanout is idempotent) %s error=%s",
+                where,
+                e.args[0].name(),
+            )
 
     def _wait(self, seconds: float) -> None:
         """Back off without being kicked out of the consumer group, and stop early on shutdown.
@@ -186,7 +188,9 @@ class FanoutWorker:
                 if msg is not None and not msg.error():
                     # Fetched before the pause, or from a partition assigned during it. Rewind so
                     # it's re-read later instead of silently skipped.
-                    self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                    topic, partition, offset = msg.topic(), msg.partition(), msg.offset()
+                    if topic is not None and partition is not None and offset is not None:
+                        self.consumer.seek(TopicPartition(topic, partition, offset))
         finally:
             # Resume what we own *now*: a rebalance during the wait may have changed it.
             self.consumer.resume(self.consumer.assignment())
@@ -212,28 +216,30 @@ class FanoutWorker:
 
 
 def make_consumer(bootstrap_servers: str, group_id: str) -> Consumer:
-    return Consumer({
-        "bootstrap.servers": bootstrap_servers,
-        "group.id": group_id,
-        "auto.offset.reset": "earliest",
-        # At-least-once: offsets are committed explicitly in process(), after handling.
-        "enable.auto.commit": False,
-        # Kafka's new consumer rebalance protocol (KIP-848, GA in Kafka 4.0): rebalances are
-        # incremental, so only partitions that actually move are paused, not the whole group.
-        "group.protocol": "consumer",
-    })
+    return Consumer(
+        {
+            "bootstrap.servers": bootstrap_servers,
+            "group.id": group_id,
+            "auto.offset.reset": "earliest",
+            # At-least-once: offsets are committed explicitly in process(), after handling.
+            "enable.auto.commit": False,
+            # Kafka's new consumer rebalance protocol (KIP-848, GA in Kafka 4.0): rebalances are
+            # incremental, so only partitions that actually move are paused, not the whole group.
+            "group.protocol": "consumer",
+        }
+    )
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    log.info("group=%s dead_letter_topic=%s", FANOUT_GROUP_ID, POST_CREATED_DLT_TOPIC)
+    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    log.info("group=%s dead_letter_topic=%s", settings.fanout_group_id, settings.post_created_dlt_topic)
     worker = FanoutWorker(
-        make_consumer(KAFKA_BOOTSTRAP_SERVERS, FANOUT_GROUP_ID),
+        make_consumer(settings.kafka_bootstrap_servers, settings.fanout_group_id),
         SessionLocal,
-        DeadLetterPublisher(KAFKA_BOOTSTRAP_SERVERS, POST_CREATED_DLT_TOPIC),
+        DeadLetterPublisher(settings.kafka_bootstrap_servers, settings.post_created_dlt_topic),
     )
     install_signal_handlers(worker.stop)
-    worker.run(POST_CREATED_TOPIC)
+    worker.run(settings.post_created_topic)
 
 
 if __name__ == "__main__":
