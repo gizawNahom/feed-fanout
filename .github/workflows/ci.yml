@@ -52,3 +52,13 @@ jobs:
       # using the runner's Docker.
       - name: Tests
         run: uv run pytest
+
+  e2e:
+    name: End-to-end (docker compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # Builds the image, starts the whole stack, and checks a post reaches a follower's feed.
+      - name: Smoke test
+        run: KEEP=0 scripts/smoke_test.sh

@@ -44,27 +44,15 @@ GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (new
 
 ## Quick start
 
-Requires Docker and [uv](https://docs.astral.sh/uv/).
+Requires only Docker.
 
 ```bash
 git clone https://github.com/gizawNahom/feed-fanout.git
 cd feed-fanout
-
-# 1. Start Kafka, Postgres, and the dashboards
-docker compose up -d
-
-# 2. One-time setup: create the topics and the database tables
-docker exec feed-fanout-kafka /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --create --topic post-created --partitions 3 --replication-factor 1
-docker exec feed-fanout-kafka /opt/kafka/bin/kafka-topics.sh \
-  --bootstrap-server localhost:9092 --create --topic post-created.dlt --partitions 1 --replication-factor 1
-uv run alembic upgrade head
-
-# 3. Run the API, the outbox relay, and a fanout worker (one terminal each)
-uv run uvicorn feed_fanout.api:app --reload
-uv run python -m feed_fanout.relay
-uv run python -m feed_fanout.worker
+docker compose up -d --build --wait
 ```
+
+That starts everything and waits until it's healthy: Kafka and Postgres, a one-shot service that creates the topics, one that runs the database migrations, then the API, the outbox relay, and a fanout worker. Everything runs in containers, as an unprivileged user, with JSON logs.
 
 Try it:
 
@@ -73,6 +61,27 @@ curl -X PUT localhost:8000/users/bob/following/alice                  # bob foll
 curl -X POST localhost:8000/posts -H 'content-type: application/json' \
   -d '{"author_id": "alice", "text": "hello world"}'                   # alice posts
 curl localhost:8000/users/bob/feed                                    # bob's feed
+```
+
+More:
+
+```bash
+docker compose up -d --scale worker=3      # more fanout workers (Kafka splits the partitions)
+docker compose logs -f worker              # follow the workers' JSON logs
+docker compose ps                          # status, including each service's health
+docker compose down                        # stop (add --volumes to also delete the data)
+scripts/smoke_test.sh                      # end-to-end check: post -> follower's feed
+```
+
+### Running the app outside Docker (for development)
+
+Requires [uv](https://docs.astral.sh/uv/). Start only the infrastructure and setup services, then run the processes on your machine (they log readable text on a terminal):
+
+```bash
+docker compose up -d kafka postgres kafka-ui adminer kafka-topics migrate
+uv run uvicorn feed_fanout.api:app --reload
+uv run python -m feed_fanout.relay
+uv run python -m feed_fanout.worker
 ```
 
 ## API
@@ -173,7 +182,7 @@ uv run ruff format .             # format
 uv run mypy feed_fanout tests    # types (strict)
 ```
 
-CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14.
+CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14, plus the end-to-end smoke test against the containerized stack.
 
 ## Tests
 
@@ -250,7 +259,7 @@ Every process answers two probes, the way Docker and Kubernetes expect:
 ## Current limitations
 
 - **Relay ordering is best-effort.** If one event fails to publish while later ones for the same author succeed, or several relays run at once, an author's events can reach Kafka out of order. Harmless here, since feeds are sorted by `created_at` and fanout is idempotent, but a consumer that needed strict per-author order would need a single relay and to stop at the first failure.
-- **Single Kafka broker; services run outside Docker.** *(v5)*
+- **Single Kafka broker.** *(v5)*
 
 ## License
 

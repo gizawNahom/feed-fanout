@@ -1,3 +1,20 @@
+# The whole stack: `docker compose up -d --build`, then http://localhost:8000/docs
+#
+# Infrastructure (Kafka, Postgres, dashboards), one-shot setup (topics, migrations), and the
+# app itself (API, outbox relay, fanout workers). To run the app on your machine instead
+# (e.g. while developing), start only the rest:
+#   docker compose up -d kafka postgres kafka-ui adminer kafka-topics migrate
+
+# Shared by the app services: one image, different commands.
+x-app: &app
+  build: .
+  image: feed-fanout:local
+  restart: unless-stopped
+  environment:
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092   # the DOCKER listener
+    DATABASE_URL: postgresql+psycopg://feed:feed@postgres:5432/feed
+    LOG_FORMAT: json
+
 services:
   kafka:
     image: apache/kafka:4.3.1
@@ -12,7 +29,7 @@ services:
 
       # Three listeners:
       #   HOST       localhost:9092 - code running on your machine (our Python producer/consumer)
-      #   DOCKER     kafka:29092    - other containers on the compose network (Kafka UI, later our services)
+      #   DOCKER     kafka:29092    - other containers on the compose network (Kafka UI, our services)
       #   CONTROLLER :9093          - internal KRaft controller traffic
       # A client connects, then is told the "advertised" address to use, so each audience needs its own.
       KAFKA_LISTENERS: HOST://:9092,DOCKER://:29092,CONTROLLER://:9093
@@ -84,6 +101,84 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # --- One-shot setup: runs to completion before the app starts --------------------
+
+  # Creates the topics (idempotent). Auto-creation is off, so this is the one place they're defined.
+  kafka-topics:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        create() { /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --replication-factor 1 --topic "$$1" --partitions "$$2"; }
+        create post-created 3
+        create post-created.dlt 1
+    restart: "no"
+
+  # Applies database migrations, then exits.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- The app -------------------------------------------------------------------
+
+  # HTTP API: http://localhost:8000/docs
+  api:
+    <<: *app
+    command: ["uvicorn", "feed_fanout.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Publishes outbox rows to Kafka.
+  relay:
+    <<: *app
+    command: ["python", "-m", "feed_fanout.relay"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s   # time to finish the current batch after SIGTERM
+
+  # Fanout workers. Scale with: docker compose up -d --scale worker=3
+  worker:
+    <<: *app
+    command: ["python", "-m", "feed_fanout.worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s   # time to finish the current event after SIGTERM
 
 volumes:
   kafka-data:
