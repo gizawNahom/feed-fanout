@@ -13,9 +13,11 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import delete, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from feed_fanout.config import settings
@@ -65,6 +67,30 @@ class PostOut(BaseModel):
 class FeedPage(BaseModel):
     items: list[PostOut]
     next_cursor: str | None  # pass as ?cursor= to get the next (older) page
+
+
+# --- Health -----------------------------------------------------------------
+
+
+@app.get("/health/live", tags=["health"])
+def live() -> dict[str, str]:
+    """The process is up and serving requests. Checks no dependencies on purpose: restarting
+    the API wouldn't fix a database outage, and restarting every instance at once would hurt."""
+    return {"status": "ok"}
+
+
+@app.get("/health/ready", tags=["health"], responses={503: {"description": "A dependency is unavailable"}})
+def ready(session: SessionDep) -> JSONResponse:
+    """Can serve requests right now: the database answers. If not, stop sending traffic here."""
+    try:
+        session.execute(text("SELECT 1"))
+    except SQLAlchemyError as e:
+        log.warning("readiness check failed: database unavailable: %s", e.__class__.__name__)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"status": "unavailable", "checks": {"database": str(getattr(e, "orig", None) or e).strip()}},
+        )
+    return JSONResponse({"status": "ok", "checks": {"database": "ok"}})
 
 
 # --- Posts ------------------------------------------------------------------

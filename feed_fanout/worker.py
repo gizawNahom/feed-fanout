@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
+from feed_fanout.health import Health, Heartbeat, start_health_server
 from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.models import FeedItem, Follow
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy, is_transient
@@ -116,11 +117,23 @@ class FanoutWorker:
         self.session_factory = session_factory
         self.dead_letters = dead_letters
         self.retry = retry
+        self.heartbeat = Heartbeat()
         self._stopping = threading.Event()
+        self._subscribed = False
+        self._assigned_partitions = 0
 
     def stop(self) -> None:
         """Ask the worker to exit after the current event. Safe to call from a signal handler."""
         self._stopping.set()
+        self.heartbeat.beat("stopping")
+
+    def health(self) -> Health:
+        """Live while the loop makes progress (backing off counts); ready while consuming."""
+        return Health(
+            live=self.heartbeat.live(),
+            ready=self._subscribed and not self._stopping.is_set(),
+            details={**self.heartbeat.details(), "assigned_partitions": self._assigned_partitions},
+        )
 
     def process(self, msg: Message) -> Outcome:
         """Fan out or dead-letter one message, then commit its offset."""
@@ -131,6 +144,7 @@ class FanoutWorker:
             try:
                 handle(msg.value(), self.session_factory, where)
                 outcome = Outcome.FANNED_OUT
+                self.heartbeat.success()
                 break
             except PermanentError as e:
                 self.dead_letters.send(msg, e.reason, str(e))
@@ -142,6 +156,7 @@ class FanoutWorker:
                     self.dead_letters.send(msg, "unexpected", repr(e))
                     outcome = Outcome.DEAD_LETTERED
                     break
+                self.heartbeat.failure()
                 delay = self.retry.delay(attempt)
                 log.warning(
                     "attempt %d failed (%s), retrying in %.1fs %s",
@@ -184,6 +199,9 @@ class FanoutWorker:
         try:
             deadline = time.monotonic() + seconds
             while (remaining := deadline - time.monotonic()) > 0 and not self._stopping.is_set():
+                # Waiting out an outage is correct behavior, not being stuck: stay live, so the
+                # orchestrator doesn't restart us (it couldn't fix the outage anyway).
+                self.heartbeat.beat("backing_off")
                 msg = self.consumer.poll(min(remaining, 0.5))
                 if msg is not None and not msg.error():
                     # Fetched before the pause, or from a partition assigned during it. Rewind so
@@ -197,9 +215,12 @@ class FanoutWorker:
 
     def run(self, topic: str) -> None:
         self.consumer.subscribe([topic])
+        self._subscribed = True
         log.info("consuming topic=%s", topic)
         try:
             while not self._stopping.is_set():
+                self.heartbeat.beat("consuming")
+                self._assigned_partitions = len(self.consumer.assignment())
                 msg = self.consumer.poll(0.5)
                 if msg is None:
                     continue
@@ -210,6 +231,7 @@ class FanoutWorker:
         finally:
             # Leave the group now, so partitions are reassigned immediately instead of
             # after the session timeout.
+            self._subscribed = False
             self.consumer.close()
             self.dead_letters.close()
             log.info("closed")
@@ -239,7 +261,12 @@ def main() -> None:
         DeadLetterPublisher(settings.kafka_bootstrap_servers, settings.post_created_dlt_topic),
     )
     install_signal_handlers(worker.stop)
-    worker.run(settings.post_created_topic)
+    health = start_health_server(worker, settings.worker_health_port)
+    try:
+        worker.run(settings.post_created_topic)
+    finally:
+        if health:
+            health.stop()
 
 
 if __name__ == "__main__":

@@ -158,6 +158,8 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `POST_CREATED_TOPIC` | `post-created` (dead letters go to `<topic>.dlt`) |
 | `FANOUT_GROUP_ID` | `fanout-workers` |
 | `LOG_LEVEL` | `INFO` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
+| `RELAY_HEALTH_PORT` | `8002` (`0` disables) |
 
 Settings are validated at startup ([pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)), so a typo like `LOG_LEVEL=VERBOSE` fails immediately with a clear error.
 
@@ -189,7 +191,28 @@ They cover the behavior that matters: followers receive posts and non-followers 
 | API docs, with try-it-out | http://localhost:8000/docs |
 | Kafka UI: messages, partitions, consumer lag | http://localhost:8080 |
 | Adminer: browse `posts`, `follows`, `feed_items` | http://localhost:8081 (System: PostgreSQL, Server: `postgres`, user/password/database: `feed`) |
+| Health checks | API http://localhost:8000/health/ready · worker http://localhost:8001/health/ready · relay http://localhost:8002/health/ready |
 | Logs | Every log line carries the `post_id`, so one post can be followed from the API through Kafka to the worker |
+
+### Health checks
+
+Every process answers two probes, the way Docker and Kubernetes expect:
+
+| Probe | Question | On failure, the orchestrator… |
+|---|---|---|
+| `GET /health/live` | Is the process stuck, so that restarting it would help? | restarts it |
+| `GET /health/ready` | Should it be doing work right now? | stops routing work to it (no restart) |
+
+- **API:** `live` always answers `200`. `ready` runs `SELECT 1` and returns `503`, with the database error, if Postgres can't be reached.
+- **Worker and relay:** a small HTTP server on ports 8001/8002. `live` means the main loop is still making progress; `ready` means it's running and not shutting down. The response carries details for whoever is debugging:
+
+```json
+{"status": "ok", "live": true, "ready": true, "state": "backing_off",
+ "consecutive_failures": 4, "last_loop_seconds_ago": 0.3, "last_success_seconds_ago": 42.1,
+ "assigned_partitions": 2}
+```
+
+**Liveness never depends on other services.** If Postgres goes down, restarting every API instance and worker can't fix it; it only adds a restart storm on top of the outage. So a worker waiting out an outage (`state: backing_off`) is still *live*. Likewise, consumer lag isn't a health signal: a slow worker is alive, and restarting it only makes it slower. Lag belongs in metrics and alerts (v6).
 
 ## Things to try
 

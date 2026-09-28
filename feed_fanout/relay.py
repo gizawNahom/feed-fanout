@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
+from feed_fanout.health import Health, Heartbeat, start_health_server
 from feed_fanout.kafka import close_producer, make_producer
 from feed_fanout.models import OutboxEvent
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy
@@ -51,12 +52,23 @@ class OutboxRelay:
         self.producer = producer
         self.batch_size = batch_size
         self.flush_timeout = flush_timeout
+        self.heartbeat = Heartbeat()
         self._stopping = threading.Event()
+        self._running = False
         self._closed = False
 
     def stop(self) -> None:
         """Ask the relay to exit after the current batch. Safe to call from a signal handler."""
         self._stopping.set()
+        self.heartbeat.beat("stopping")
+
+    def health(self) -> Health:
+        """Live while the loop makes progress (backing off counts); ready while running."""
+        return Health(
+            live=self.heartbeat.live(),
+            ready=self._running and not self._stopping.is_set(),
+            details=self.heartbeat.details(),
+        )
 
     def publish_batch(self) -> BatchResult:
         """Publish up to batch_size pending events. Only acknowledged events are removed."""
@@ -107,9 +119,10 @@ class OutboxRelay:
     def run(self, idle_interval: float = 0.5, retry: RetryPolicy = DEFAULT_RETRY) -> None:
         """Publish until stopped. Polls every idle_interval when there's nothing to do."""
         log.info("relaying outbox")
-        failures = 0
+        self._running = True
         try:
             while not self._stopping.is_set():
+                self.heartbeat.beat("publishing")
                 try:
                     result = self.publish_batch()
                     ok = result.failed == 0
@@ -117,15 +130,21 @@ class OutboxRelay:
                     log.exception("relay batch failed")
                     result, ok = BatchResult(0, 0), False
                 if not ok:
-                    failures += 1
+                    self.heartbeat.failure()
+                    failures = self.heartbeat.consecutive_failures
                     delay = retry.delay(failures)
                     log.warning("backing off %.1fs (consecutive failures: %d)", delay, failures)
+                    # Backing off is progress, not being stuck (delays are capped well below
+                    # the heartbeat's stale_after).
+                    self.heartbeat.beat("backing_off")
                     self._stopping.wait(delay)  # like sleep, but returns early on stop()
                     continue
-                failures = 0
+                self.heartbeat.success()
                 if result.published < self.batch_size:  # caught up: wait for new events
+                    self.heartbeat.beat("idle")
                     self._stopping.wait(idle_interval)
         finally:
+            self._running = False
             self.close()
 
     def close(self) -> None:
@@ -142,7 +161,12 @@ def main() -> None:
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     relay = OutboxRelay(SessionLocal, make_producer(settings.kafka_bootstrap_servers))
     install_signal_handlers(relay.stop)
-    relay.run()
+    health = start_health_server(relay, settings.relay_health_port)
+    try:
+        relay.run()
+    finally:
+        if health:
+            health.stop()
 
 
 if __name__ == "__main__":
