@@ -6,19 +6,23 @@ Docs: http://localhost:8000/docs
 """
 
 import base64
+import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from feed_fanout import metrics
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
@@ -30,6 +34,28 @@ log = get_logger("feed_fanout.api")
 
 
 app = FastAPI(title="feed-fanout")
+
+
+@app.middleware("http")
+async def record_metrics(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    """Count and time every request, labelled by route *template* (/users/{user_id}/feed),
+    never the raw path: /users/bob/feed would create one time series per user."""
+    start = time.perf_counter()
+    status_code = 500  # if the handler raises, the client gets a 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        template = route.path if isinstance(route, APIRoute) else "unmatched"
+        metrics.HTTP_DURATION.labels(request.method, template).observe(time.perf_counter() - start)
+        metrics.HTTP_REQUESTS.labels(request.method, template, str(status_code)).inc()
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 def get_session() -> Iterator[Session]:

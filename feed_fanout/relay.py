@@ -15,13 +15,19 @@ again on restart. The worker's fanout is idempotent, so duplicates are harmless.
 """
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from confluent_kafka import KafkaError, Message, Producer
-from sqlalchemy import delete, select
+from prometheus_client import REGISTRY
+from prometheus_client.core import GaugeMetricFamily, Metric
+from prometheus_client.registry import Collector
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from feed_fanout import metrics
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.health import Health, Heartbeat, start_health_server
@@ -101,6 +107,8 @@ class OutboxRelay:
                         "publish failed", outbox_id=row.id, topic=row.topic, key=row.key, error=str(errors[row.id])
                     )
         # Committed: acknowledged rows are gone; failed ones stay for the next attempt.
+        metrics.RELAY_PUBLISHED.inc(len(delivered))
+        metrics.RELAY_FAILED.inc(failed)
         if delivered:
             log.info("published", events=len(delivered))
         return BatchResult(len(delivered), failed)
@@ -153,10 +161,39 @@ class OutboxRelay:
         log.info("closed")
 
 
+class OutboxCollector(Collector):
+    """Outbox backlog and the age of its oldest event, read from the database on each scrape.
+
+    The age matters more than the count: a thousand events published within a second is
+    fine; one event stuck for five minutes means the relay (or Kafka) is stuck.
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+    def describe(self) -> Iterable[Metric]:
+        return []  # don't query the database when registering
+
+    def collect(self) -> Iterable[Metric]:
+        try:
+            with self.session_factory() as session:
+                count, oldest = session.execute(select(func.count(), func.min(OutboxEvent.created_at))).one()
+        except SQLAlchemyError as e:
+            # Leave the gauges out rather than failing the whole scrape.
+            log.warning("outbox metrics unavailable", error=e.__class__.__name__)
+            return
+        age = 0.0 if oldest is None else max((datetime.now(UTC) - oldest).total_seconds(), 0.0)
+        yield GaugeMetricFamily("feed_fanout_outbox_backlog", "Outbox events waiting to be published.", value=count)
+        yield GaugeMetricFamily(
+            "feed_fanout_outbox_oldest_age_seconds", "Age of the oldest outbox event (0 when empty).", value=age
+        )
+
+
 def main() -> None:
     configure_logging(settings.log_level, settings.log_format)
     relay = OutboxRelay(SessionLocal, make_producer(settings.kafka_bootstrap_servers))
     install_signal_handlers(relay.stop)
+    REGISTRY.register(OutboxCollector(SessionLocal))
     health = start_health_server(relay, settings.relay_health_port)
     try:
         relay.run()

@@ -40,7 +40,7 @@ GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (new
 | [v3-service](https://github.com/gizawNahom/feed-fanout/tree/v3-service) | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations + integration tests | A real API; feeds are shared, persistent, and paginated |
 | [v4-reliable](https://github.com/gizawNahom/feed-fanout/tree/v4-reliable) | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown, incremental rebalancing | Never lose or duplicate a post |
 | [v5-ops](https://github.com/gizawNahom/feed-fanout/tree/v5-ops) | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
-| v6-scale *(next)* | Metrics, load testing, caching, celebrity handling | Measured performance |
+| **v6-scale** *(in progress)* | Metrics, load testing, caching, celebrity handling | Measured performance |
 
 ## Quick start
 
@@ -224,7 +224,34 @@ They cover the behavior that matters: followers receive posts and non-followers 
 | Kafka UI: messages, partitions, consumer lag | http://localhost:8080 |
 | Adminer: browse `posts`, `follows`, `feed_items` | http://localhost:8081 (System: PostgreSQL, Server: `postgres`, user/password/database: `feed`) |
 | Health checks | API http://localhost:8000/health/ready · worker http://localhost:8001/health/ready · relay http://localhost:8002/health/ready |
+| Metrics dashboard (Grafana) | http://localhost:3000, with `make up-observability` |
+| Metrics and alerts (Prometheus) | http://localhost:9090, alerts at http://localhost:9090/alerts |
 | Logs | Structured: JSON lines with real fields (see below) |
+
+### Metrics
+
+Every process exposes Prometheus metrics at `/metrics` (API on :8000, worker on :8001, relay on :8002). Prometheus and a provisioned Grafana dashboard run in an optional Compose profile, so the default stack stays light:
+
+```bash
+make up-observability     # = docker compose --profile observability up -d --build --wait
+```
+
+| Metric | Why it matters |
+|---|---|
+| `feed_fanout_post_to_feed_seconds` | **What users experience:** from a post's creation until it's in its followers' feeds |
+| `feed_fanout_http_requests_total`, `…_request_duration_seconds` | API traffic, errors and latency per route |
+| `feed_fanout_worker_events_total{outcome}` | Fanned out, dead-lettered, or abandoned |
+| `feed_fanout_worker_fanout_duration_seconds`, `…_feed_rows_written` | Cost of each fanout; the tail of rows-per-post is where celebrities show up |
+| `feed_fanout_worker_consumer_lag{partition}` | Are the workers keeping up? |
+| `feed_fanout_outbox_backlog`, `…_oldest_age_seconds` | Is publishing keeping up? The oldest event's age matters more than the count |
+| `feed_fanout_worker_retries_total{kind}`, `feed_fanout_dead_letters_total{reason}` | Problems that would otherwise be quiet |
+
+- **Labels are low-cardinality only:** routes are recorded as templates (`/users/{user_id}/feed`), never raw paths, and nothing is labelled by user or post. Every distinct label value is a new time series; per-post detail lives in the logs.
+- **Every worker is scraped,** including ones added with `--scale worker=N`: Prometheus discovers them through Compose's DNS.
+
+**SLO: 99% of posts reach followers' feeds within 5 seconds.** Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.
+
+**Alerts** ([`observability/prometheus/rules.yml`](observability/prometheus/rules.yml)): the SLO burn; consumer lag high; an outbox event stuck for over a minute; events dead-lettered; API error rate; a target down. They're **unit-tested** with `promtool test rules` (in CI, and `make rules`), which feeds synthetic time series through the rules and checks exactly when each alert fires, including that a 5-minute spike doesn't page anyone. (They show in Prometheus's Alerts page; routing them to Slack or a pager would be Alertmanager's job.)
 
 ### Logs
 

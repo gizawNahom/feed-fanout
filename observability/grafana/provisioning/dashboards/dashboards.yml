@@ -1,0 +1,10 @@
+apiVersion: 1
+
+# Load every dashboard JSON in /var/lib/grafana/dashboards (mounted from the repo).
+providers:
+  - name: feed-fanout
+    folder: feed-fanout
+    type: file
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

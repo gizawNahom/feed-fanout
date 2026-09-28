@@ -3,12 +3,13 @@ Health checks for the background processes (worker, relay), over a tiny HTTP ser
 
     GET /health/live   200 if the main loop is making progress, else 503 -> orchestrator restarts
     GET /health/ready  200 if the process should be doing work now, else 503 -> no restart
+    GET /metrics       Prometheus metrics
 
 Liveness deliberately ignores dependencies: if Postgres is down, restarting every worker
 can't fix it and only adds a restart storm. A worker waiting out an outage is alive.
 Consumer lag isn't a health signal either (a slow worker is alive); it belongs in metrics.
 
-The HTTP server runs on a daemon thread; v6 will serve Prometheus metrics from it too.
+The HTTP server runs on a daemon thread.
 """
 
 import json
@@ -18,6 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
+
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from feed_fanout.logs import get_logger
 
@@ -106,6 +109,14 @@ def start_health_server(check: HealthCheck, port: int) -> HealthServer | None:
 def _handler_for(check: HealthCheck) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
+            if self.path == "/metrics":
+                payload = generate_latest()
+                self.send_response(200)
+                self.send_header("Content-Type", CONTENT_TYPE_LATEST)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if self.path not in ("/health/live", "/health/ready"):
                 self._send(404, {"error": "not found"})
                 return

@@ -31,6 +31,13 @@ jobs:
         run: uv run ruff format --check .
       - name: Types (mypy, strict)
         run: uv run mypy feed_fanout tests
+      # Prometheus config valid, and the alert rules fire exactly when their tests expect.
+      - name: Alert rules (promtool)
+        run: |
+          docker run --rm -v "$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool \
+            prom/prometheus:v3.14.0 check config prometheus.yml
+          docker run --rm -v "$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool \
+            prom/prometheus:v3.14.0 test rules rules_test.yml
 
   test:
     name: Tests (Python ${{ matrix.python }})

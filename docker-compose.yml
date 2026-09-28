@@ -182,6 +182,55 @@ services:
       start_period: 10s
     stop_grace_period: 30s   # time to finish the current event after SIGTERM
 
+  # --- Observability (optional) ---------------------------------------------------
+  # docker compose --profile observability up -d --wait   (or: make up-observability)
+
+  # Scrapes /metrics from the API, relay and every worker; evaluates the alert rules.
+  # http://localhost:9090  (Alerts page: http://localhost:9090/alerts)
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Dashboards, provisioned from observability/grafana. http://localhost:3000
+  grafana:
+    image: grafana/grafana:13.0.2
+    profiles: [observability]
+    ports:
+      - "3000:3000"
+    environment:
+      # Local development only: no login, full access.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/feed-fanout.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
 volumes:
   kafka-data:
   postgres-data:
+  prometheus-data:
+  grafana-data:

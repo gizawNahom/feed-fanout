@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from confluent_kafka import KafkaError, KafkaException, Message, Producer
 
+from feed_fanout import metrics
 from feed_fanout.logs import get_logger
 
 log = get_logger(__name__)
@@ -80,6 +81,7 @@ class DeadLetterPublisher:
         )
         if self._producer.flush(15) or errors:
             raise KafkaException(errors[0] if errors else KafkaError(KafkaError._TIMED_OUT))
+        metrics.DEAD_LETTERS.labels(reason=reason).inc()
         log.warning("dead-lettered", reason=reason, dead_letter_topic=self.topic, error=error)
 
     def close(self) -> None:

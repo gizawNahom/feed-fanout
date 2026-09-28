@@ -1,0 +1,88 @@
+# Recording rules and alerts. Tested with: promtool test rules rules_test.yml
+#
+# Alerts are grouped by what they protect. Severity:
+#   page    users are affected now: someone should look immediately
+#   ticket  needs attention, but not at 3am
+
+groups:
+  # --- SLO: 99% of posts reach followers' feeds within 5 seconds ---------------------
+  #
+  # The error budget is the 1% of posts allowed to be slower. Rather than alerting on
+  # "any slow post", alert on the *rate* the budget is being spent (burn rate). A 14.4x
+  # burn would use up a 30-day budget in about 2 days. Requiring it over both a short
+  # and a long window catches real problems quickly without firing on brief blips.
+  - name: slo
+    rules:
+      - record: feed_fanout:post_to_feed_slow:ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="5"}[5m]))
+            / sum(rate(feed_fanout_post_to_feed_seconds_count[5m]))
+          )
+      - record: feed_fanout:post_to_feed_slow:ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="5"}[1h]))
+            / sum(rate(feed_fanout_post_to_feed_seconds_count[1h]))
+          )
+
+      - alert: PostToFeedSLOBurn
+        expr: |
+          feed_fanout:post_to_feed_slow:ratio_rate5m > (14.4 * 0.01)
+          and
+          feed_fanout:post_to_feed_slow:ratio_rate1h > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: Posts are reaching feeds too slowly
+          description: More than 14.4% of posts took over 5s to reach followers' feeds, over both the last 5 minutes and the last hour. The 99%-within-5s SLO is burning its error budget fast. Check consumer lag, fanout duration, and the outbox.
+
+  # --- The pipeline ---------------------------------------------------------------
+  - name: pipeline
+    rules:
+      - alert: ConsumerLagHigh
+        expr: sum(feed_fanout_worker_consumer_lag) > 1000
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Fanout workers are falling behind
+          description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity) or a database problem.
+
+      - alert: OutboxStuck
+        expr: max(feed_fanout_outbox_oldest_age_seconds) > 60
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Posts are not being published to Kafka
+          description: An outbox event has been waiting over a minute. The relay is down or Kafka is refusing writes (e.g. too few brokers in sync).
+
+      - alert: EventsDeadLettered
+        expr: sum(increase(feed_fanout_dead_letters_total[10m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: Events were moved to the dead-letter topic
+          description: Some events could not be processed and need a human. Inspect them with `python -m feed_fanout.replay_dlt`.
+
+      - alert: APIErrorRateHigh
+        expr: |
+          sum(rate(feed_fanout_http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(feed_fanout_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: The API is failing requests
+          description: More than 5% of API requests returned a 5xx over the last 5 minutes.
+
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: A process stopped reporting metrics
+          description: Prometheus can't scrape one of the services; it is down or unreachable.

@@ -1,0 +1,118 @@
+# Unit tests for the alert rules: promtool test rules rules_test.yml
+# Each test feeds synthetic time series in and checks exactly when an alert fires.
+
+rule_files:
+  - rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # The SLO alert fires when half the posts are slow, over both windows...
+  - interval: 1m
+    input_series:
+      - series: feed_fanout_post_to_feed_seconds_count
+        values: 0+100x90
+      - series: feed_fanout_post_to_feed_seconds_bucket{le="5"}
+        values: 0+50x90
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: PostToFeedSLOBurn
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: Posts are reaching feeds too slowly
+              description: More than 14.4% of posts took over 5s to reach followers' feeds, over both the last 5 minutes and the last hour. The 99%-within-5s SLO is burning its error budget fast. Check consumer lag, fanout duration, and the outbox.
+
+  # ...but not when (almost) every post is on time.
+  - interval: 1m
+    input_series:
+      - series: feed_fanout_post_to_feed_seconds_count
+        values: 0+100x90
+      - series: feed_fanout_post_to_feed_seconds_bucket{le="5"}
+        values: 0+99x90
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: PostToFeedSLOBurn
+        exp_alerts: []
+
+  # A short spike doesn't fire: 5 minutes of mostly-slow posts (minutes 81-85) push the 5m
+  # window over the threshold (~22% slow at 88m), but over the last hour only ~8% were slow,
+  # under the 14.4% threshold. That's the second window's job.
+  - interval: 1m
+    input_series:
+      - series: feed_fanout_post_to_feed_seconds_count
+        values: 0+100x90
+      - series: feed_fanout_post_to_feed_seconds_bucket{le="5"}
+        values: 0+100x80 8010+10x4 8150+100x4
+    promql_expr_test:
+      # The short window alone would fire (1 = true)...
+      - expr: feed_fanout:post_to_feed_slow:ratio_rate5m > bool 0.144
+        eval_time: 88m
+        exp_samples:
+          - labels: "{}"
+            value: 1
+      # ...the long window holds it back.
+      - expr: feed_fanout:post_to_feed_slow:ratio_rate1h < bool 0.144
+        eval_time: 88m
+        exp_samples:
+          - labels: "{}"
+            value: 1
+    alert_rule_test:
+      - eval_time: 88m
+        alertname: PostToFeedSLOBurn
+        exp_alerts: []
+
+  # The outbox alert fires once an event has waited over a minute, for a minute.
+  - interval: 1m
+    input_series:
+      - series: feed_fanout_outbox_oldest_age_seconds{job="relay", instance="relay:8002"}
+        values: 0 0 90 150 210
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: OutboxStuck
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: OutboxStuck
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: Posts are not being published to Kafka
+              description: An outbox event has been waiting over a minute. The relay is down or Kafka is refusing writes (e.g. too few brokers in sync).
+
+  # Lag summed across partitions (and workers) must stay high for 5 minutes.
+  - interval: 1m
+    input_series:
+      - series: feed_fanout_worker_consumer_lag{job="worker", instance="w1:8001", partition="0"}
+        values: 600x10
+      - series: feed_fanout_worker_consumer_lag{job="worker", instance="w2:8001", partition="1"}
+        values: 600x10
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ConsumerLagHigh
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: ConsumerLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: Fanout workers are falling behind
+              description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity) or a database problem.
+
+  - interval: 1m
+    input_series:
+      - series: up{job="worker", instance="w1:8001"}
+        values: 1 1 0 0 0
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              job: worker
+              instance: w1:8001
+            exp_annotations:
+              summary: A process stopped reporting metrics
+              description: Prometheus can't scrape one of the services; it is down or unreachable.

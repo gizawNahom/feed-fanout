@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from structlog.contextvars import bound_contextvars
 
+from feed_fanout import metrics
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
@@ -84,11 +85,16 @@ def handle(value: bytes | None, session_factory: sessionmaker[Session]) -> int:
     except ValidationError as e:
         raise PermanentError("malformed", str(e)) from e
     try:
-        added = fan_out(session_factory, event)
+        with metrics.FANOUT_DURATION.time():
+            added = fan_out(session_factory, event)
     except IntegrityError as e:
         if getattr(e.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
             raise PermanentError("unknown_post", f"post {event.post_id} does not exist") from e
         raise
+    metrics.FEED_ROWS.observe(added)
+    # What users experience: from the post's creation until it's in the feeds. (An event
+    # replayed from the dead-letter topic counts from its original creation time, too.)
+    metrics.POST_TO_FEED.observe(max(time.time() - event.created_at.timestamp(), 0))
     log.info("fanned out", feeds_added=added)
     return added
 
@@ -131,6 +137,7 @@ class FanoutWorker:
         self._stopping = threading.Event()
         self._subscribed = False
         self._assigned_partitions = 0
+        self._lag_updated_at = 0.0
 
     def stop(self) -> None:
         """Ask the worker to exit after the current event. Safe to call from a signal handler."""
@@ -150,7 +157,9 @@ class FanoutWorker:
         # Every log line while handling this message (retries, dead-lettering, ...) carries its
         # partition, offset and, if readable, post ids. All are unbound again afterwards.
         with bound_contextvars(partition=msg.partition(), offset=msg.offset(), **_event_ids(msg.value())):
-            return self._process(msg)
+            outcome = self._process(msg)
+        metrics.EVENTS.labels(outcome=outcome.value).inc()
+        return outcome
 
     def _process(self, msg: Message) -> Outcome:
         attempt = 0
@@ -172,11 +181,13 @@ class FanoutWorker:
                     outcome = Outcome.DEAD_LETTERED
                     break
                 self.heartbeat.failure()
+                kind = "transient" if is_transient(e) else "unexpected"
+                metrics.RETRIES.labels(kind=kind).inc()
                 delay = self.retry.delay(attempt)
                 log.warning(
                     "attempt failed, retrying",
                     attempt=attempt,
-                    kind="transient" if is_transient(e) else "unexpected",
+                    kind=kind,
                     error=repr(e),
                     retry_in_s=round(delay, 2),
                 )
@@ -190,6 +201,23 @@ class FanoutWorker:
         # Only now is the event fanned out or safely dead-lettered.
         self._commit(msg)
         return outcome
+
+    def update_lag(self, every: float = 5.0) -> None:
+        """Consumer lag per owned partition: the newest offset minus our position.
+
+        Uses the watermarks librdkafka caches from its fetches (no extra broker calls), and
+        runs at most once every `every` seconds.
+        """
+        now = time.monotonic()
+        if now - self._lag_updated_at < every:
+            return
+        self._lag_updated_at = now
+        metrics.CONSUMER_LAG.clear()  # drop partitions we no longer own
+        for tp in self.consumer.assignment():
+            _, high = self.consumer.get_watermark_offsets(tp, cached=True)
+            [position] = self.consumer.position([tp])
+            if high >= 0 and position.offset >= 0:
+                metrics.CONSUMER_LAG.labels(partition=str(tp.partition)).set(max(high - position.offset, 0))
 
     def _commit(self, msg: Message) -> None:
         try:
@@ -232,6 +260,7 @@ class FanoutWorker:
             while not self._stopping.is_set():
                 self.heartbeat.beat("consuming")
                 self._assigned_partitions = len(self.consumer.assignment())
+                self.update_lag()
                 msg = self.consumer.poll(0.5)
                 if msg is None:
                     continue
