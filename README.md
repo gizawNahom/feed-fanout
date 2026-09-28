@@ -39,8 +39,8 @@ GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (new
 | [v2-kafka](https://github.com/gizawNahom/feed-fanout/tree/v2-kafka) | Kafka as the queue; separate producer and worker processes; at-least-once commits | Queued work survives crashes; workers scale independently |
 | [v3-service](https://github.com/gizawNahom/feed-fanout/tree/v3-service) | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations + integration tests | A real API; feeds are shared, persistent, and paginated |
 | [v4-reliable](https://github.com/gizawNahom/feed-fanout/tree/v4-reliable) | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown, incremental rebalancing | Never lose or duplicate a post |
-| **v5-ops** *(in progress)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
-| v6-scale *(planned)* | Metrics, load testing, caching, celebrity handling | Measured performance |
+| [v5-ops](https://github.com/gizawNahom/feed-fanout/tree/v5-ops) | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
+| v6-scale *(next)* | Metrics, load testing, caching, celebrity handling | Measured performance |
 
 ## Quick start
 
