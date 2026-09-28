@@ -6,7 +6,6 @@ Integration-test fixtures: real Postgres and Kafka in throwaway containers.
 - Your dev containers (docker compose) are never touched.
 """
 
-import gc
 import socket
 import time
 import uuid
@@ -15,7 +14,7 @@ from collections.abc import Iterator
 import pytest
 from alembic import command
 from alembic.config import Config
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, Message
 from confluent_kafka.admin import AdminClient, NewTopic
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, text
@@ -24,8 +23,8 @@ from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
 from feed_fanout.api import app, get_publisher, get_session
-from feed_fanout.kafka import PostCreatedPublisher
-from feed_fanout.worker import Outcome, make_consumer, process
+from feed_fanout.kafka import DeadLetterPublisher, PostCreatedPublisher
+from feed_fanout.worker import FanoutWorker, Outcome, RetryPolicy, make_consumer
 
 KAFKA_IMAGE = "apache/kafka:4.3.1"       # same images as docker-compose.yml
 POSTGRES_IMAGE = "postgres:18.6-alpine"
@@ -109,21 +108,53 @@ def session_factory(engine: Engine) -> Iterator[sessionmaker[Session]]:
         conn.execute(text("TRUNCATE feed_items, follows, posts"))
 
 
-@pytest.fixture(scope="session")
-def kafka_admin(kafka_bootstrap: str) -> Iterator[AdminClient]:
-    admin = AdminClient({"bootstrap.servers": kafka_bootstrap})
-    yield admin
-    # AdminClient has no close(); drop it before the container stops so it doesn't keep reconnecting.
-    del admin
-    gc.collect()
+def _create_topic(bootstrap: str, name: str, partitions: int) -> str:
+    # A short-lived AdminClient: it has no close(), so one kept around (e.g. in a session
+    # fixture) would keep reconnecting after the Kafka container stops.
+    admin = AdminClient({"bootstrap.servers": bootstrap})
+    for future in admin.create_topics([NewTopic(name, num_partitions=partitions, replication_factor=1)]).values():
+        future.result(timeout=30)
+    return name
 
 
 @pytest.fixture
-def topic(kafka_admin: AdminClient) -> str:
-    name = f"post-created-{uuid.uuid4().hex[:8]}"
-    for future in kafka_admin.create_topics([NewTopic(name, num_partitions=3, replication_factor=1)]).values():
-        future.result(timeout=30)
-    return name
+def topic(kafka_bootstrap: str) -> str:
+    return _create_topic(kafka_bootstrap, f"post-created-{uuid.uuid4().hex[:8]}", partitions=3)
+
+
+@pytest.fixture
+def dlt_topic(kafka_bootstrap: str, topic: str) -> str:
+    return _create_topic(kafka_bootstrap, f"{topic}.dlt", partitions=1)
+
+
+@pytest.fixture
+def dead_letters(kafka_bootstrap: str, dlt_topic: str) -> Iterator[DeadLetterPublisher]:
+    publisher = DeadLetterPublisher(kafka_bootstrap, dlt_topic)
+    yield publisher
+    publisher.close()
+
+
+@pytest.fixture
+def read_dead_letters(kafka_bootstrap: str, dlt_topic: str) -> Iterator["DeadLetterReader"]:
+    consumer = make_consumer(kafka_bootstrap, group_id=f"test-dlt-{uuid.uuid4().hex[:8]}")
+    consumer.subscribe([dlt_topic])
+    yield DeadLetterReader(consumer)
+    consumer.close()
+
+
+class DeadLetterReader:
+    def __init__(self, consumer: Consumer) -> None:
+        self.consumer = consumer
+
+    def __call__(self, count: int, timeout: float = 20) -> list[Message]:
+        messages: list[Message] = []
+        deadline = time.monotonic() + timeout
+        while len(messages) < count and time.monotonic() < deadline:
+            msg = self.consumer.poll(0.5)
+            if msg is not None and not msg.error():
+                messages.append(msg)
+        assert len(messages) == count, f"expected {count} dead letters, got {len(messages)}"
+        return messages
 
 
 @pytest.fixture
@@ -147,29 +178,31 @@ def client(session_factory: sessionmaker[Session], publisher: PostCreatedPublish
     app.dependency_overrides.clear()
 
 
-class Worker:
-    """Drives the real worker code one message at a time, so tests control timing."""
+# Fast backoff so retry tests take milliseconds, not seconds.
+FAST_RETRY = RetryPolicy(base_delay=0.01, max_delay=0.05, max_unexpected_attempts=3)
 
-    def __init__(self, consumer: Consumer, session_factory: sessionmaker[Session],
-                 publisher: PostCreatedPublisher) -> None:
-        self.consumer = consumer
-        self.session_factory = session_factory
+
+class Worker:
+    """Drives the real FanoutWorker one message at a time, so tests control timing."""
+
+    def __init__(self, fanout: FanoutWorker, publisher: PostCreatedPublisher) -> None:
+        self.fanout = fanout
         self.publisher = publisher
 
     def process_next(self, timeout: float = 20) -> Outcome:
         self.publisher.flush(10)  # make sure anything the API published has reached Kafka
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            msg = self.consumer.poll(0.5)
+            msg = self.fanout.consumer.poll(0.5)
             if msg is not None and not msg.error():
-                return process(msg, self.consumer, self.session_factory)
+                return self.fanout.process(msg)
         raise AssertionError(f"no message arrived within {timeout}s")
 
 
 @pytest.fixture
 def worker(kafka_bootstrap: str, topic: str, session_factory: sessionmaker[Session],
-           publisher: PostCreatedPublisher) -> Iterator[Worker]:
+           publisher: PostCreatedPublisher, dead_letters: DeadLetterPublisher) -> Iterator[Worker]:
     consumer = make_consumer(kafka_bootstrap, group_id=f"test-{uuid.uuid4().hex[:8]}")
     consumer.subscribe([topic])
-    yield Worker(consumer, session_factory, publisher)
+    yield Worker(FanoutWorker(consumer, session_factory, dead_letters, FAST_RETRY), publisher)
     consumer.close()
