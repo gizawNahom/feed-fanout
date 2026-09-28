@@ -15,7 +15,7 @@ again on restart. The worker's fanout is idempotent, so duplicates are harmless.
 """
 
 import logging
-import time
+import threading
 from dataclasses import dataclass
 
 from confluent_kafka import KafkaError, Message, Producer
@@ -27,6 +27,7 @@ from feed_fanout.db import SessionLocal
 from feed_fanout.kafka import make_producer
 from feed_fanout.models import OutboxEvent
 from feed_fanout.retry import RetryPolicy
+from feed_fanout.shutdown import install_signal_handlers
 
 log = logging.getLogger("feed_fanout.relay")
 
@@ -49,6 +50,12 @@ class OutboxRelay:
         self.producer = producer
         self.batch_size = batch_size
         self.flush_timeout = flush_timeout
+        self._stopping = threading.Event()
+        self._closed = False
+
+    def stop(self) -> None:
+        """Ask the relay to exit after the current batch. Safe to call from a signal handler."""
+        self._stopping.set()
 
     def publish_batch(self) -> BatchResult:
         """Publish up to batch_size pending events. Only acknowledged events are removed."""
@@ -92,11 +99,11 @@ class OutboxRelay:
         return on_delivery
 
     def run(self, idle_interval: float = 0.5, retry: RetryPolicy = RetryPolicy()) -> None:
-        """Publish until interrupted. Polls every idle_interval when there's nothing to do."""
+        """Publish until stopped. Polls every idle_interval when there's nothing to do."""
         log.info("relaying outbox")
         failures = 0
         try:
-            while True:
+            while not self._stopping.is_set():
                 try:
                     result = self.publish_batch()
                     ok = result.failed == 0
@@ -107,22 +114,29 @@ class OutboxRelay:
                     failures += 1
                     delay = retry.delay(failures)
                     log.warning("backing off %.1fs (consecutive failures: %d)", delay, failures)
-                    time.sleep(delay)
+                    self._stopping.wait(delay)  # like sleep, but returns early on stop()
                     continue
                 failures = 0
                 if result.published < self.batch_size:  # caught up: wait for new events
-                    time.sleep(idle_interval)
-        except KeyboardInterrupt:
-            pass
+                    self._stopping.wait(idle_interval)
         finally:
-            self.producer.flush(self.flush_timeout)
-            self.producer.close()
-            log.info("closed")
+            self.close()
+
+    def close(self) -> None:
+        """Deliver anything buffered and release the producer. Safe to call twice."""
+        if self._closed:
+            return
+        self._closed = True
+        self.producer.flush(self.flush_timeout)
+        self.producer.close()
+        log.info("closed")
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    OutboxRelay(SessionLocal, make_producer(KAFKA_BOOTSTRAP_SERVERS)).run()
+    relay = OutboxRelay(SessionLocal, make_producer(KAFKA_BOOTSTRAP_SERVERS))
+    install_signal_handlers(relay.stop)
+    relay.run()
 
 
 if __name__ == "__main__":

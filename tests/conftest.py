@@ -73,6 +73,10 @@ def kafka_bootstrap() -> Iterator[str]:
             KAFKA_AUTO_CREATE_TOPICS_ENABLE="false",
             # Default is 3s: every new consumer group would wait 3s before starting.
             KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS="0",
+            # The new consumer protocol (KIP-848) assigns partitions on heartbeats, 5s apart by
+            # default. Faster heartbeats make tests that start consumers much quicker.
+            KAFKA_GROUP_CONSUMER_MIN_HEARTBEAT_INTERVAL_MS="500",
+            KAFKA_GROUP_CONSUMER_HEARTBEAT_INTERVAL_MS="500",
         )
     )
     with container:
@@ -178,9 +182,9 @@ def read_topic(kafka_bootstrap: str, topic: str) -> Iterator[TopicReader]:
 def relay(kafka_bootstrap: str, session_factory: sessionmaker[Session]) -> Iterator[OutboxRelay]:
     # Short message timeout so failure tests don't wait 10s.
     producer = make_producer(kafka_bootstrap, message_timeout_ms=3000)
-    yield OutboxRelay(session_factory, producer, flush_timeout=5)
-    producer.flush(5)
-    producer.close()
+    relay = OutboxRelay(session_factory, producer, flush_timeout=5)
+    yield relay
+    relay.close()
 
 
 @pytest.fixture

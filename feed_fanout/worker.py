@@ -15,9 +15,10 @@ The offset is committed only once the event is fanned out or safely dead-lettere
 
 import enum
 import logging
+import threading
 import time
 
-from confluent_kafka import Consumer, Message, TopicPartition
+from confluent_kafka import Consumer, KafkaError, KafkaException, Message, TopicPartition
 from pydantic import ValidationError
 from sqlalchemy import literal, select
 from sqlalchemy.dialects.postgresql import insert
@@ -35,6 +36,7 @@ from feed_fanout.events import PostCreated
 from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.models import FeedItem, Follow
 from feed_fanout.retry import RetryPolicy, is_transient
+from feed_fanout.shutdown import install_signal_handlers
 
 log = logging.getLogger("feed_fanout.worker")
 
@@ -44,6 +46,7 @@ FOREIGN_KEY_VIOLATION = "23503"
 class Outcome(enum.Enum):
     FANNED_OUT = "fanned_out"
     DEAD_LETTERED = "dead_lettered"
+    ABANDONED = "abandoned"  # shutdown during retries; offset not committed, will be re-delivered
 
 
 class PermanentError(Exception):
@@ -94,6 +97,19 @@ def handle(value: bytes | None, session_factory: sessionmaker[Session], where: s
     return added
 
 
+# Commit errors meaning "this partition was reassigned to another consumer while we were
+# processing". The new owner re-processes the event from the last committed offset, which
+# is safe because fanout is idempotent. Any other commit error is a real problem.
+REASSIGNED_ERRORS = {
+    KafkaError.ILLEGAL_GENERATION,
+    KafkaError.UNKNOWN_MEMBER_ID,
+    KafkaError.REBALANCE_IN_PROGRESS,
+    KafkaError.STALE_MEMBER_EPOCH,
+    KafkaError.FENCED_MEMBER_EPOCH,
+    KafkaError._ASSIGNMENT_LOST,
+}
+
+
 class FanoutWorker:
     def __init__(
         self,
@@ -106,6 +122,11 @@ class FanoutWorker:
         self.session_factory = session_factory
         self.dead_letters = dead_letters
         self.retry = retry
+        self._stopping = threading.Event()
+
+    def stop(self) -> None:
+        """Ask the worker to exit after the current event. Safe to call from a signal handler."""
+        self._stopping.set()
 
     def process(self, msg: Message) -> Outcome:
         """Fan out or dead-letter one message, then commit its offset."""
@@ -131,46 +152,61 @@ class FanoutWorker:
                 log.warning("attempt %d failed (%s), retrying in %.1fs %s",
                             attempt, "transient" if is_transient(e) else "unexpected", delay, where)
                 self._wait(delay)
+                if self._stopping.is_set():
+                    # Shutting down mid-retry: leave the offset uncommitted so the event is
+                    # re-delivered (to us after a restart, or to another worker).
+                    log.info("abandoning retries for shutdown %s", where)
+                    return Outcome.ABANDONED
 
         # Only now is the event fanned out or safely dead-lettered.
-        self.consumer.commit(message=msg, asynchronous=False)
+        self._commit(msg, where)
         return outcome
 
+    def _commit(self, msg: Message, where: str) -> None:
+        try:
+            self.consumer.commit(message=msg, asynchronous=False)
+        except KafkaException as e:
+            if e.args[0].code() not in REASSIGNED_ERRORS:
+                raise
+            log.warning("commit rejected, partition was reassigned; the new owner will "
+                        "re-process this event (harmless: fanout is idempotent) %s error=%s",
+                        where, e.args[0].name())
+
     def _wait(self, seconds: float) -> None:
-        """Back off without being kicked out of the consumer group.
+        """Back off without being kicked out of the consumer group, and stop early on shutdown.
 
         Sleeping for long would exceed max.poll.interval.ms and trigger a rebalance, so pause
         every partition and keep polling instead. poll() keeps the membership alive.
         """
-        assignment = self.consumer.assignment()
-        self.consumer.pause(assignment)
+        self.consumer.pause(self.consumer.assignment())
         try:
             deadline = time.monotonic() + seconds
-            while (remaining := deadline - time.monotonic()) > 0:
-                msg = self.consumer.poll(min(remaining, 1.0))
+            while (remaining := deadline - time.monotonic()) > 0 and not self._stopping.is_set():
+                msg = self.consumer.poll(min(remaining, 0.5))
                 if msg is not None and not msg.error():
-                    # Already fetched before the pause. Rewind so it's re-read after resuming,
-                    # instead of silently skipped.
+                    # Fetched before the pause, or from a partition assigned during it. Rewind so
+                    # it's re-read later instead of silently skipped.
                     self.consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
         finally:
-            self.consumer.resume(assignment)
+            # Resume what we own *now*: a rebalance during the wait may have changed it.
+            self.consumer.resume(self.consumer.assignment())
 
     def run(self, topic: str) -> None:
         self.consumer.subscribe([topic])
         log.info("consuming topic=%s", topic)
         try:
-            while True:
-                msg = self.consumer.poll(1.0)
+            while not self._stopping.is_set():
+                msg = self.consumer.poll(0.5)
                 if msg is None:
                     continue
                 if msg.error():
                     log.error("consumer error: %s", msg.error())
                     continue
                 self.process(msg)
-        except KeyboardInterrupt:
-            pass
         finally:
-            self.consumer.close()  # leave the group so partitions are reassigned right away
+            # Leave the group now, so partitions are reassigned immediately instead of
+            # after the session timeout.
+            self.consumer.close()
             self.dead_letters.close()
             log.info("closed")
 
@@ -182,6 +218,9 @@ def make_consumer(bootstrap_servers: str, group_id: str) -> Consumer:
         "auto.offset.reset": "earliest",
         # At-least-once: offsets are committed explicitly in process(), after handling.
         "enable.auto.commit": False,
+        # Kafka's new consumer rebalance protocol (KIP-848, GA in Kafka 4.0): rebalances are
+        # incremental, so only partitions that actually move are paused, not the whole group.
+        "group.protocol": "consumer",
     })
 
 
@@ -193,6 +232,7 @@ def main() -> None:
         SessionLocal,
         DeadLetterPublisher(KAFKA_BOOTSTRAP_SERVERS, POST_CREATED_DLT_TOPIC),
     )
+    install_signal_handlers(worker.stop)
     worker.run(POST_CREATED_TOPIC)
 
 

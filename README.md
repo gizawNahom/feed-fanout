@@ -36,7 +36,7 @@ GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (new
 | [v1-in-memory](https://github.com/gizawNahom/feed-fanout/tree/v1-in-memory) | `queue.Queue` + worker threads in one process | Proves the pattern: decouple posting from slow fanout |
 | [v2-kafka](https://github.com/gizawNahom/feed-fanout/tree/v2-kafka) | Kafka as the queue; separate producer and worker processes; at-least-once commits | Queued work survives crashes; workers scale independently |
 | [v3-service](https://github.com/gizawNahom/feed-fanout/tree/v3-service) | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations + integration tests | A real API; feeds are shared, persistent, and paginated |
-| **v4-reliable** *(in progress)* | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown | Never lose or duplicate a post |
+| **v4-reliable** *(in progress)* | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown, incremental rebalancing | Never lose or duplicate a post |
 | v5-ops *(planned)* | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
 | v6-scale *(planned)* | Metrics, load testing, caching, celebrity handling | Measured performance |
 
@@ -115,6 +115,20 @@ docker exec feed-fanout-kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstr
   --topic post-created.dlt --from-beginning --formatter-property print.headers=true --formatter-property print.key=true
 ```
 
+## Shutdown and rebalancing
+
+Deploys, `docker stop`, and Kubernetes stop a process with **SIGTERM**, then SIGKILL after a grace period. The worker and relay handle it:
+
+- **Finish the current event, commit, then leave.** The worker calls `consumer.close()`, which tells Kafka it's leaving, so its partitions go to the other workers **immediately**, not after the ~45s session timeout. The relay finishes its batch and flushes.
+- **Mid-retry shutdown.** A worker backing off during a database outage stops waiting at once and exits **without committing**: the event is re-delivered, not lost.
+- **A second signal forces exit**, for when someone really means it.
+
+Workers use Kafka's **new consumer rebalance protocol** (`group.protocol=consumer`, KIP-848, GA in Kafka 4.0). The broker assigns partitions incrementally, so a worker joining or leaving pauses only the partitions that move, not the whole group.
+
+If a partition is reassigned between a worker fanning out an event and committing it, the commit is rejected. The worker logs it and moves on: the new owner re-processes the event from the last committed offset, and fanout is idempotent. While backing off, the worker resumes whatever it owns *after* the wait, since a rebalance may have changed it.
+
+*Not done:* static membership (`group.instance.id`), which lets a worker restarted within the session timeout rejoin without any rebalance. It's worth it for rolling deploys once the services are deployed (v5).
+
 ## Tests
 
 ```bash
@@ -123,7 +137,7 @@ uv run pytest
 
 Integration tests run against **real Postgres and Kafka** in throwaway containers ([testcontainers](https://testcontainers.com/)), using the same images as `docker-compose.yml`. Your dev containers and data are never touched. Each test gets empty tables and its own Kafka topic. The schema is built by running the real Alembic migrations, so the migrations are tested too. Docker must be running.
 
-They cover the behavior that matters: followers receive posts and non-followers don't; replaying an event adds no duplicates; bad events land in the dead-letter topic with their context, and the worker moves on; a database outage is retried until it succeeds; feeds are newest-first; and pagination returns every post exactly once, even when timestamps tie.
+They cover the behavior that matters: followers receive posts and non-followers don't; replaying an event adds no duplicates; bad events land in the dead-letter topic with their context, and the worker moves on; a database outage is retried until it succeeds; SIGTERM exits promptly, commits finished work and leaves the group (tested against a real subprocess); a worker joining mid-stream loses nothing; feeds are newest-first; and pagination returns every post exactly once, even when timestamps tie.
 
 ## Observability
 
@@ -141,6 +155,7 @@ They cover the behavior that matters: followers receive posts and non-followers 
 - **Kafka outage:** stop Kafka (`docker compose stop kafka`) and create posts. The API still returns `201`, and the rows wait in `outbox`. Start Kafka and the relay drains them.
 - **Idempotency:** rewind the consumer group and replay events. The worker logs `feeds_added=0`, and no feed gets a duplicate.
 - **Database outage:** stop the worker, create a post, run `docker compose stop postgres`, and start the worker. It backs off (1s, 2s, 4s…). Run `docker compose start postgres` and the post is fanned out.
+- **Graceful handover:** run two workers, then `kill <pid>` one of them (SIGTERM). It exits in under a second, and `kafka-consumer-groups.sh --describe --group fanout-workers --members` shows the survivor owning all partitions within a heartbeat or two.
 - **Dead letters:** produce garbage to `post-created` with the console producer and watch it land in `post-created.dlt`.
 
 ## What's worth knowing
@@ -156,7 +171,6 @@ They cover the behavior that matters: followers receive posts and non-followers 
 
 - **No tooling to replay dead letters** back into the main topic yet.
 - **Relay ordering is best-effort.** If one event fails to publish while later ones for the same author succeed, or several relays run at once, an author's events can reach Kafka out of order. Harmless here, since feeds are sorted by `created_at` and fanout is idempotent, but a consumer that needed strict per-author order would need a single relay and to stop at the first failure.
-- **Workers don't handle SIGTERM.** A killed worker never leaves its group, so its partitions stall until the session timeout (~45s). *(v4)*
 - **Single Kafka broker; services run outside Docker.** *(v5)*
 
 ## License
