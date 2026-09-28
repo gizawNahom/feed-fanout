@@ -50,6 +50,8 @@ groups:
           summary: Fanout workers are falling behind
           description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity) or a database problem.
 
+      # The outbox gauges are computed by the relay, so this detects a stuck publish path
+      # while the relay is up. A relay that's down is caught by TargetDown{job="relay"}.
       - alert: OutboxStuck
         expr: max(feed_fanout_outbox_oldest_age_seconds) > 60
         for: 1m
@@ -57,7 +59,7 @@ groups:
           severity: page
         annotations:
           summary: Posts are not being published to Kafka
-          description: An outbox event has been waiting over a minute. The relay is down or Kafka is refusing writes (e.g. too few brokers in sync).
+          description: An outbox event has been waiting over a minute while the relay is running, so Kafka is refusing or failing writes (e.g. too few brokers in sync). If the relay itself is down, these gauges vanish with it and TargetDown fires instead.
 
       - alert: EventsDeadLettered
         expr: sum(increase(feed_fanout_dead_letters_total[10m])) > 0

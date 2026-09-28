@@ -79,7 +79,7 @@ tests:
               severity: page
             exp_annotations:
               summary: Posts are not being published to Kafka
-              description: An outbox event has been waiting over a minute. The relay is down or Kafka is refusing writes (e.g. too few brokers in sync).
+              description: An outbox event has been waiting over a minute while the relay is running, so Kafka is refusing or failing writes (e.g. too few brokers in sync). If the relay itself is down, these gauges vanish with it and TargetDown fires instead.
 
   # Lag summed across partitions (and workers) must stay high for 5 minutes.
   - interval: 1m
