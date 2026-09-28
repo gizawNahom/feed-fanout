@@ -2,7 +2,7 @@
 
 import random
 
-from feed_fanout.worker import RetryPolicy
+from feed_fanout.retry import RetryPolicy
 
 POLICY = RetryPolicy(base_delay=1.0, max_delay=30.0)
 

@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Identity, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 USER_ID = String(64)  # users are identified by handle; there is no users table yet
@@ -55,3 +55,20 @@ class FeedItem(Base):
         # Serves "newest N posts in this user's feed", including keyset pagination.
         Index("ix_feed_items_user_id_created_at", "user_id", "created_at", "post_id"),
     )
+
+
+class OutboxEvent(Base):
+    """An event waiting to be published to Kafka (transactional outbox).
+
+    Written in the same transaction as the change it describes, so the event exists
+    if and only if the change was committed. The relay publishes rows and deletes them.
+    """
+
+    __tablename__ = "outbox"
+
+    # Monotonic id: the relay publishes in insertion order.
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    topic: Mapped[str] = mapped_column(String(255))
+    key: Mapped[str | None] = mapped_column(String(255))
+    payload: Mapped[str] = mapped_column(Text)  # serialized event (JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

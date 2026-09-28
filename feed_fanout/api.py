@@ -8,10 +8,8 @@ Docs: http://localhost:8000/docs
 import base64
 import logging
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
 from datetime import datetime
-from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
@@ -20,33 +18,16 @@ from sqlalchemy import delete, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from feed_fanout.config import KAFKA_BOOTSTRAP_SERVERS
+from feed_fanout.config import POST_CREATED_TOPIC
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
-from feed_fanout.kafka import PostCreatedPublisher
-from feed_fanout.models import FeedItem, Follow, Post
+from feed_fanout.models import FeedItem, Follow, OutboxEvent, Post
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("feed_fanout.api")
 
 
-@lru_cache
-def get_publisher() -> PostCreatedPublisher:
-    """One Kafka producer per process, created on first use. Overridden in tests."""
-    return PostCreatedPublisher(KAFKA_BOOTSTRAP_SERVERS)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    yield
-    # Messages still buffered in the producer are lost if we exit without flushing.
-    if get_publisher.cache_info().currsize:
-        remaining = get_publisher().flush(10)
-        if remaining:
-            log.error("shutdown: %d message(s) were not delivered", remaining)
-
-
-app = FastAPI(title="feed-fanout", lifespan=lifespan)
+app = FastAPI(title="feed-fanout")
 
 
 def get_session() -> Iterator[Session]:
@@ -54,8 +35,13 @@ def get_session() -> Iterator[Session]:
         yield session
 
 
+def get_post_created_topic() -> str:
+    """Topic the outbox relay publishes PostCreated events to. Overridden in tests."""
+    return POST_CREATED_TOPIC
+
+
 SessionDep = Annotated[Session, Depends(get_session)]
-PublisherDep = Annotated[PostCreatedPublisher, Depends(get_publisher)]
+TopicDep = Annotated[str, Depends(get_post_created_topic)]
 UserId = Annotated[str, Field(min_length=1, max_length=64)]
 
 
@@ -83,14 +69,17 @@ class FeedPage(BaseModel):
 # --- Posts ------------------------------------------------------------------
 
 @app.post("/posts", status_code=status.HTTP_201_CREATED)
-def create_post(body: CreatePost, session: SessionDep, publisher: PublisherDep) -> PostOut:
+def create_post(body: CreatePost, session: SessionDep, topic: TopicDep) -> PostOut:
     post = Post(author_id=body.author_id, text=body.text)
     session.add(post)
+    session.flush()  # assigns id and created_at
+
+    # Transactional outbox: the event is saved in the same transaction as the post, so
+    # both are committed or neither is. The outbox relay publishes it to Kafka.
+    event = PostCreated(post_id=post.id, author_id=post.author_id, created_at=post.created_at)
+    session.add(OutboxEvent(topic=topic, key=post.author_id, payload=event.model_dump_json()))
     session.commit()
 
-    # Known gap (fixed in v4 with an outbox): if the process dies between the commit
-    # above and this publish, the post exists but is never fanned out.
-    publisher.publish(PostCreated(post_id=post.id, author_id=post.author_id, created_at=post.created_at))
     log.info("post created post_id=%s author_id=%s", post.id, post.author_id)
     return PostOut.model_validate(post)
 

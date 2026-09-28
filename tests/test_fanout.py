@@ -14,7 +14,7 @@ import feed_fanout.worker
 from feed_fanout.events import PostCreated
 from feed_fanout.models import FeedItem
 from feed_fanout.worker import Outcome, PermanentError, handle
-from tests.conftest import DeadLetterReader, Worker
+from tests.conftest import TopicReader, Worker
 from tests.helpers import create_post, feed_ids, follow
 
 
@@ -101,7 +101,7 @@ def test_malformed_payload_is_a_permanent_error(value: bytes | None, session_fac
 
 
 def test_malformed_event_is_dead_lettered_with_context(
-    worker: Worker, read_dead_letters: DeadLetterReader, kafka_bootstrap: str, topic: str
+    worker: Worker, read_dead_letters: TopicReader, kafka_bootstrap: str, topic: str
 ) -> None:
     produce_raw(kafka_bootstrap, topic, key="alice", value=b"garbage")
 
@@ -120,7 +120,7 @@ def test_malformed_event_is_dead_lettered_with_context(
 
 
 def test_offset_is_committed_after_dead_lettering(
-    worker: Worker, read_dead_letters: DeadLetterReader, kafka_bootstrap: str, topic: str
+    worker: Worker, read_dead_letters: TopicReader, kafka_bootstrap: str, topic: str
 ) -> None:
     # A dead-lettered event is done: it must not be re-delivered to the main topic's consumers.
     produce_raw(kafka_bootstrap, topic, key="alice", value=b"garbage")
@@ -134,11 +134,12 @@ def test_offset_is_committed_after_dead_lettering(
 
 
 def test_event_for_unknown_post_is_dead_lettered(
-    client: TestClient, worker: Worker, read_dead_letters: DeadLetterReader,
-    session_factory: sessionmaker[Session], publisher,
+    client: TestClient, worker: Worker, read_dead_letters: TopicReader,
+    session_factory: sessionmaker[Session], kafka_bootstrap: str, topic: str,
 ) -> None:
     follow(client, "bob", "alice")
-    publisher.publish(PostCreated(post_id=uuid.uuid4(), author_id="alice", created_at=datetime.now(UTC)))
+    event = PostCreated(post_id=uuid.uuid4(), author_id="alice", created_at=datetime.now(UTC))
+    produce_raw(kafka_bootstrap, topic, key="alice", value=event.model_dump_json().encode())
 
     assert worker.process_next() == Outcome.DEAD_LETTERED
 
@@ -148,7 +149,7 @@ def test_event_for_unknown_post_is_dead_lettered(
 
 
 def test_worker_keeps_going_after_a_dead_lettered_event(
-    client: TestClient, worker: Worker, read_dead_letters: DeadLetterReader, kafka_bootstrap: str, topic: str
+    client: TestClient, worker: Worker, read_dead_letters: TopicReader, kafka_bootstrap: str, topic: str
 ) -> None:
     # Given a malformed message followed by a valid post, both from alice (same partition, in order)
     produce_raw(kafka_bootstrap, topic, key="alice", value=b"garbage")
@@ -199,7 +200,7 @@ def test_database_outage_is_retried_until_it_succeeds(
 
 
 def test_unexpected_error_is_retried_then_dead_lettered(
-    client: TestClient, worker: Worker, read_dead_letters: DeadLetterReader, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, worker: Worker, read_dead_letters: TopicReader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     follow(client, "bob", "alice")
     create_post(client, "alice")

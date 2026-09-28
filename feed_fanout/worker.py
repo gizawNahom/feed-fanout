@@ -15,16 +15,13 @@ The offset is committed only once the event is fanned out or safely dead-lettere
 
 import enum
 import logging
-import random
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
 
 from confluent_kafka import Consumer, Message, TopicPartition
 from pydantic import ValidationError
 from sqlalchemy import literal, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, OperationalError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from feed_fanout.config import (
@@ -37,6 +34,7 @@ from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
 from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.models import FeedItem, Follow
+from feed_fanout.retry import RetryPolicy, is_transient
 
 log = logging.getLogger("feed_fanout.worker")
 
@@ -54,30 +52,6 @@ class PermanentError(Exception):
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(detail)
         self.reason = reason
-
-
-@dataclass(frozen=True)
-class RetryPolicy:
-    base_delay: float = 1.0          # backoff ceiling for the first retry, doubled each attempt...
-    max_delay: float = 30.0          # ...up to this cap
-    max_unexpected_attempts: int = 3  # unexpected errors: give up and dead-letter after this many
-
-    def delay(self, attempt: int, rand: Callable[[], float] = random.random) -> float:
-        """Exponential backoff with full jitter: a random wait in [0, ceiling).
-
-        Without jitter, workers that failed together (e.g. the database went down for all
-        of them) retry together, hitting the recovering database in synchronized waves
-        (a "thundering herd"). Randomizing spreads the retries out.
-        """
-        ceiling = min(self.base_delay * 2 ** (attempt - 1), self.max_delay)
-        return rand() * ceiling
-
-
-def is_transient(e: Exception) -> bool:
-    """Database unavailable, connection dropped, deadlock: worth retrying as-is."""
-    return isinstance(e, OperationalError | InterfaceError) or (
-        isinstance(e, DBAPIError) and e.connection_invalidated
-    )
 
 
 def fan_out(session_factory: sessionmaker[Session], event: PostCreated) -> int:

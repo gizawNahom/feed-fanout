@@ -22,9 +22,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
-from feed_fanout.api import app, get_publisher, get_session
-from feed_fanout.kafka import DeadLetterPublisher, PostCreatedPublisher
-from feed_fanout.worker import FanoutWorker, Outcome, RetryPolicy, make_consumer
+from feed_fanout.api import app, get_post_created_topic, get_session
+from feed_fanout.kafka import DeadLetterPublisher, make_producer
+from feed_fanout.relay import OutboxRelay
+from feed_fanout.retry import RetryPolicy
+from feed_fanout.worker import FanoutWorker, Outcome, make_consumer
 
 KAFKA_IMAGE = "apache/kafka:4.3.1"       # same images as docker-compose.yml
 POSTGRES_IMAGE = "postgres:18.6-alpine"
@@ -105,7 +107,7 @@ def engine(postgres_url: str) -> Iterator[Engine]:
 def session_factory(engine: Engine) -> Iterator[sessionmaker[Session]]:
     yield sessionmaker(engine, expire_on_commit=False)
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE feed_items, follows, posts"))
+        conn.execute(text("TRUNCATE feed_items, follows, posts, outbox"))
 
 
 def _create_topic(bootstrap: str, name: str, partitions: int) -> str:
@@ -134,15 +136,9 @@ def dead_letters(kafka_bootstrap: str, dlt_topic: str) -> Iterator[DeadLetterPub
     publisher.close()
 
 
-@pytest.fixture
-def read_dead_letters(kafka_bootstrap: str, dlt_topic: str) -> Iterator["DeadLetterReader"]:
-    consumer = make_consumer(kafka_bootstrap, group_id=f"test-dlt-{uuid.uuid4().hex[:8]}")
-    consumer.subscribe([dlt_topic])
-    yield DeadLetterReader(consumer)
-    consumer.close()
+class TopicReader:
+    """Reads messages from one topic with its own consumer group, for assertions."""
 
-
-class DeadLetterReader:
     def __init__(self, consumer: Consumer) -> None:
         self.consumer = consumer
 
@@ -153,26 +149,49 @@ class DeadLetterReader:
             msg = self.consumer.poll(0.5)
             if msg is not None and not msg.error():
                 messages.append(msg)
-        assert len(messages) == count, f"expected {count} dead letters, got {len(messages)}"
+        assert len(messages) == count, f"expected {count} message(s), got {len(messages)}"
         return messages
 
+    def nothing_more(self, wait: float = 3) -> None:
+        msg = self.consumer.poll(wait)
+        assert msg is None or msg.error(), f"unexpected message: {msg.value()!r}"
+
+
+def _reader(bootstrap: str, topic: str) -> Iterator[TopicReader]:
+    consumer = make_consumer(bootstrap, group_id=f"test-reader-{uuid.uuid4().hex[:8]}")
+    consumer.subscribe([topic])
+    yield TopicReader(consumer)
+    consumer.close()
+
 
 @pytest.fixture
-def publisher(kafka_bootstrap: str, topic: str) -> Iterator[PostCreatedPublisher]:
-    publisher = PostCreatedPublisher(kafka_bootstrap, topic)
-    yield publisher
-    publisher.close()
+def read_dead_letters(kafka_bootstrap: str, dlt_topic: str) -> Iterator[TopicReader]:
+    yield from _reader(kafka_bootstrap, dlt_topic)
 
 
 @pytest.fixture
-def client(session_factory: sessionmaker[Session], publisher: PostCreatedPublisher) -> Iterator[TestClient]:
-    """The FastAPI app, wired to the test database and test topic."""
+def read_topic(kafka_bootstrap: str, topic: str) -> Iterator[TopicReader]:
+    yield from _reader(kafka_bootstrap, topic)
+
+
+@pytest.fixture
+def relay(kafka_bootstrap: str, session_factory: sessionmaker[Session]) -> Iterator[OutboxRelay]:
+    # Short message timeout so failure tests don't wait 10s.
+    producer = make_producer(kafka_bootstrap, message_timeout_ms=3000)
+    yield OutboxRelay(session_factory, producer, flush_timeout=5)
+    producer.flush(5)
+    producer.close()
+
+
+@pytest.fixture
+def client(session_factory: sessionmaker[Session], topic: str) -> Iterator[TestClient]:
+    """The FastAPI app, wired to the test database. Its outbox events target the test topic."""
     def test_session() -> Iterator[Session]:
         with session_factory() as session:
             yield session
 
     app.dependency_overrides[get_session] = test_session
-    app.dependency_overrides[get_publisher] = lambda: publisher
+    app.dependency_overrides[get_post_created_topic] = lambda: topic
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
@@ -185,12 +204,12 @@ FAST_RETRY = RetryPolicy(base_delay=0.01, max_delay=0.05, max_unexpected_attempt
 class Worker:
     """Drives the real FanoutWorker one message at a time, so tests control timing."""
 
-    def __init__(self, fanout: FanoutWorker, publisher: PostCreatedPublisher) -> None:
+    def __init__(self, fanout: FanoutWorker, relay: OutboxRelay) -> None:
         self.fanout = fanout
-        self.publisher = publisher
+        self.relay = relay
 
     def process_next(self, timeout: float = 20) -> Outcome:
-        self.publisher.flush(10)  # make sure anything the API published has reached Kafka
+        self.relay.publish_batch()  # move anything the API wrote to the outbox into Kafka
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             msg = self.fanout.consumer.poll(0.5)
@@ -201,8 +220,8 @@ class Worker:
 
 @pytest.fixture
 def worker(kafka_bootstrap: str, topic: str, session_factory: sessionmaker[Session],
-           publisher: PostCreatedPublisher, dead_letters: DeadLetterPublisher) -> Iterator[Worker]:
+           relay: OutboxRelay, dead_letters: DeadLetterPublisher) -> Iterator[Worker]:
     consumer = make_consumer(kafka_bootstrap, group_id=f"test-{uuid.uuid4().hex[:8]}")
     consumer.subscribe([topic])
-    yield Worker(FanoutWorker(consumer, session_factory, dead_letters, FAST_RETRY), publisher)
+    yield Worker(FanoutWorker(consumer, session_factory, dead_letters, FAST_RETRY), relay)
     consumer.close()
