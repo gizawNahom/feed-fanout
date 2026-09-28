@@ -5,6 +5,8 @@
 # (e.g. while developing), start only the rest:
 #   docker compose up -d kafka postgres kafka-ui adminer kafka-topics migrate
 
+name: feed-fanout
+
 # Shared by the app services: one image, different commands.
 x-app: &app
   build: .
@@ -18,7 +20,6 @@ x-app: &app
 services:
   kafka:
     image: apache/kafka:4.3.1
-    container_name: feed-fanout-kafka
     ports:
       - "9092:9092"
     environment:
@@ -60,7 +61,6 @@ services:
   # http://localhost:8080
   kafka-ui:
     image: kafbat/kafka-ui:v1.5.0
-    container_name: feed-fanout-kafka-ui
     ports:
       - "8080:8080"
     environment:
@@ -73,7 +73,6 @@ services:
   # Source of truth for posts, follows and feeds.
   postgres:
     image: postgres:18.6-alpine
-    container_name: feed-fanout-postgres
     ports:
       - "5432:5432"
     environment:
@@ -93,7 +92,6 @@ services:
   # http://localhost:8081  (System: PostgreSQL, Server: postgres, user/pass/db: feed)
   adminer:
     image: adminer:6.1.1
-    container_name: feed-fanout-adminer
     ports:
       - "8081:8080"
     environment:
@@ -107,6 +105,9 @@ services:
   # Creates the topics (idempotent). Auto-creation is off, so this is the one place they're defined.
   kafka-topics:
     image: apache/kafka:4.3.1
+    environment:
+      BOOTSTRAP: kafka:29092
+      REPLICATION_FACTOR: 1   # 3 in the cluster overlay
     depends_on:
       kafka:
         condition: service_healthy
@@ -114,7 +115,8 @@ services:
     command:
       - |
         set -e
-        create() { /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --replication-factor 1 --topic "$$1" --partitions "$$2"; }
+        create() { /opt/kafka/bin/kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists \
+                     --replication-factor "$$REPLICATION_FACTOR" --topic "$$1" --partitions "$$2"; }
         create post-created 3
         create post-created.dlt 1
     restart: "no"

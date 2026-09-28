@@ -73,6 +73,28 @@ docker compose down                        # stop (add --volumes to also delete 
 scripts/smoke_test.sh                      # end-to-end check: post -> follower's feed
 ```
 
+There's a `Makefile` with shortcuts for these (`make up`, `make smoke`, `make down`, `make help` for the list).
+
+### Production-like Kafka: a 3-broker cluster
+
+The default stack runs **one** Kafka broker, light enough for any laptop. An overlay turns it into a 3-node cluster with production durability settings:
+
+```bash
+make reset          # switching between 1 and 3 brokers needs fresh Kafka data
+make up-cluster     # = docker compose -f docker-compose.yml -f docker-compose.cluster.yml up -d --build --wait
+```
+
+| Setting | Value | Effect |
+|---|---|---|
+| Replication factor | 3 | every partition is copied to all 3 brokers |
+| `min.insync.replicas` | 2 | a write is acknowledged only once 2 brokers have it (producers use `acks=all`) |
+| Unclean leader election | off | an out-of-date replica never becomes leader, so acknowledged data is never silently dropped |
+| KRaft quorum | 3 controllers | the cluster keeps working when any one node fails |
+
+**What that means:** with 1 broker down, everything keeps working. With 2 down, Kafka **refuses** writes it can't replicate instead of accepting them without a backup. It chooses consistency over availability. The rest of the system absorbs this: the API keeps accepting posts, they wait in the outbox, and the relay delivers them once a second broker is back.
+
+`make failover` ([`scripts/failover_test.sh`](scripts/failover_test.sh)) proves it on an isolated copy of the stack: it kills one broker and checks that posts still arrive, kills a second and checks that posts are accepted but held back, then restarts both and checks that every post is delivered. It runs in CI on every push.
+
 ### Running the app outside Docker (for development)
 
 Requires [uv](https://docs.astral.sh/uv/). Start only the infrastructure and setup services, then run the processes on your machine (they log readable text on a terminal):
@@ -182,7 +204,7 @@ uv run ruff format .             # format
 uv run mypy feed_fanout tests    # types (strict)
 ```
 
-CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14, plus the end-to-end smoke test against the containerized stack.
+CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14, plus the end-to-end smoke test against the containerized stack and the broker failover test against the 3-node cluster.
 
 ## Tests
 
@@ -259,7 +281,6 @@ Every process answers two probes, the way Docker and Kubernetes expect:
 ## Current limitations
 
 - **Relay ordering is best-effort.** If one event fails to publish while later ones for the same author succeed, or several relays run at once, an author's events can reach Kafka out of order. Harmless here, since feeds are sorted by `created_at` and fanout is idempotent, but a consumer that needed strict per-author order would need a single relay and to stop at the first failure.
-- **Single Kafka broker.** *(v5)*
 
 ## License
 

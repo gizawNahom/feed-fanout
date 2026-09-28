@@ -62,3 +62,13 @@ jobs:
       # Builds the image, starts the whole stack, and checks a post reaches a follower's feed.
       - name: Smoke test
         run: KEEP=0 scripts/smoke_test.sh
+
+  failover:
+    name: Broker failover (3-node Kafka)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      # Kills 1, then 2 of 3 brokers while posting, and checks that no post is lost.
+      - name: Failover test
+        run: scripts/failover_test.sh
