@@ -6,6 +6,7 @@ Settings, read from environment variables (or a .env file), with local-developme
     POST_CREATED_TOPIC        default post-created   (its dead-letter topic is <topic>.dlt)
     FANOUT_GROUP_ID           default fanout-workers
     LOG_LEVEL                 default INFO
+    LOG_FORMAT                default auto  (json | text | auto: text on a terminal, JSON otherwise)
     WORKER_HEALTH_PORT        default 8001  (0 disables; GET /health/live, /health/ready)
     RELAY_HEALTH_PORT         default 8002  (0 disables)
 
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     post_created_topic: str = "post-created"
     fanout_group_id: str = "fanout-workers"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_format: Literal["auto", "json", "text"] = "auto"
     worker_health_port: int = 8001
     relay_health_port: int = 8002
 

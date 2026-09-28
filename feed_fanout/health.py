@@ -12,7 +12,6 @@ The HTTP server runs on a daemon thread; v6 will serve Prometheus metrics from i
 """
 
 import json
-import logging
 import threading
 import time
 from collections.abc import Callable
@@ -20,7 +19,9 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
 
-log = logging.getLogger(__name__)
+from feed_fanout.logs import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,7 +83,7 @@ class HealthServer:
 
     def start(self) -> "HealthServer":
         self._thread.start()
-        log.info("health checks on :%d/health/live and /health/ready", self.port)
+        log.info("health checks listening", port=self.port, paths=["/health/live", "/health/ready"])
         return self
 
     def stop(self) -> None:
@@ -98,7 +99,7 @@ def start_health_server(check: HealthCheck, port: int) -> HealthServer | None:
         return HealthServer(check, port).start()
     except OSError as e:
         # e.g. a second worker on the same machine: keep working, just without health checks.
-        log.warning("health checks disabled: can't listen on port %d (%s); set a different port", port, e)
+        log.warning("health checks disabled: port unavailable, set a different one", port=port, error=str(e))
         return None
 
 

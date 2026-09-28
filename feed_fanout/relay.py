@@ -14,7 +14,6 @@ At-least-once: if the relay dies after step 2 but before step 3, the rows are pu
 again on restart. The worker's fanout is idempotent, so duplicates are harmless.
 """
 
-import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,11 +26,12 @@ from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.health import Health, Heartbeat, start_health_server
 from feed_fanout.kafka import close_producer, make_producer
+from feed_fanout.logs import configure_logging, get_logger
 from feed_fanout.models import OutboxEvent
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy
 from feed_fanout.shutdown import install_signal_handlers
 
-log = logging.getLogger("feed_fanout.relay")
+log = get_logger("feed_fanout.relay")
 
 
 @dataclass(frozen=True)
@@ -98,15 +98,11 @@ class OutboxRelay:
             for row in rows:
                 if errors.get(row.id) is not None:
                     log.warning(
-                        "publish failed outbox_id=%s topic=%s key=%s error=%s",
-                        row.id,
-                        row.topic,
-                        row.key,
-                        errors[row.id],
+                        "publish failed", outbox_id=row.id, topic=row.topic, key=row.key, error=str(errors[row.id])
                     )
         # Committed: acknowledged rows are gone; failed ones stay for the next attempt.
         if delivered:
-            log.info("published %d event(s)", len(delivered))
+            log.info("published", events=len(delivered))
         return BatchResult(len(delivered), failed)
 
     @staticmethod
@@ -133,7 +129,7 @@ class OutboxRelay:
                     self.heartbeat.failure()
                     failures = self.heartbeat.consecutive_failures
                     delay = retry.delay(failures)
-                    log.warning("backing off %.1fs (consecutive failures: %d)", delay, failures)
+                    log.warning("backing off", retry_in_s=round(delay, 2), consecutive_failures=failures)
                     # Backing off is progress, not being stuck (delays are capped well below
                     # the heartbeat's stale_after).
                     self.heartbeat.beat("backing_off")
@@ -158,7 +154,7 @@ class OutboxRelay:
 
 
 def main() -> None:
-    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging(settings.log_level, settings.log_format)
     relay = OutboxRelay(SessionLocal, make_producer(settings.kafka_bootstrap_servers))
     install_signal_handlers(relay.stop)
     health = start_health_server(relay, settings.relay_health_port)

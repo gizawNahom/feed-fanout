@@ -158,6 +158,7 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `POST_CREATED_TOPIC` | `post-created` (dead letters go to `<topic>.dlt`) |
 | `FANOUT_GROUP_ID` | `fanout-workers` |
 | `LOG_LEVEL` | `INFO` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_FORMAT` | `auto`: readable text on a terminal, JSON otherwise (`json`, `text` to force) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
 | `RELAY_HEALTH_PORT` | `8002` (`0` disables) |
 
@@ -192,7 +193,20 @@ They cover the behavior that matters: followers receive posts and non-followers 
 | Kafka UI: messages, partitions, consumer lag | http://localhost:8080 |
 | Adminer: browse `posts`, `follows`, `feed_items` | http://localhost:8081 (System: PostgreSQL, Server: `postgres`, user/password/database: `feed`) |
 | Health checks | API http://localhost:8000/health/ready · worker http://localhost:8001/health/ready · relay http://localhost:8002/health/ready |
-| Logs | Every log line carries the `post_id`, so one post can be followed from the API through Kafka to the worker |
+| Logs | Structured: JSON lines with real fields (see below) |
+
+### Logs
+
+Every process logs through [structlog](https://www.structlog.org/): fields are keywords, not text inside the message. On a terminal you get readable text; anywhere else (containers, CI, files) one JSON object per line, ready for Loki, Datadog, CloudWatch & co.:
+
+```json
+{"msg": "post created", "post_id": "18822c67-…", "author_id": "alice", "logger": "feed_fanout.api", "level": "info", "ts": "2026-09-28T13:57:58.451Z"}
+{"msg": "fanned out", "feeds_added": 3, "post_id": "18822c67-…", "author_id": "alice", "partition": 0, "offset": 29, "logger": "feed_fanout.worker", "level": "info", "ts": "2026-09-28T13:57:59.171Z"}
+```
+
+- **Follow one post across processes:** filter on `post_id` instead of grepping text. The worker binds the event's `post_id`, `author_id`, `partition`, and `offset` once per message, so *every* line while handling it (retries, dead-lettering) carries them automatically, and they're unbound afterwards so they never leak into the next message's lines.
+- **One format per process:** uvicorn's access logs and other libraries' logs go through the same pipeline.
+- **Exceptions are one structured field** (`exception: [{exc_type, exc_value, frames…}]`), not a multi-line traceback that log collectors split into separate entries.
 
 ### Health checks
 

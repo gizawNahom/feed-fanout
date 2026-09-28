@@ -1,9 +1,10 @@
-import logging
 from datetime import UTC, datetime
 
 from confluent_kafka import KafkaError, KafkaException, Message, Producer
 
-log = logging.getLogger(__name__)
+from feed_fanout.logs import get_logger
+
+log = get_logger(__name__)
 
 REPLAY_COUNT_HEADER = "dlt.replay_count"  # how many times an event was replayed from the DLT
 
@@ -79,14 +80,7 @@ class DeadLetterPublisher:
         )
         if self._producer.flush(15) or errors:
             raise KafkaException(errors[0] if errors else KafkaError(KafkaError._TIMED_OUT))
-        log.warning(
-            "dead-lettered reason=%s topic=%s partition=%s offset=%s error=%s",
-            reason,
-            msg.topic(),
-            msg.partition(),
-            msg.offset(),
-            error,
-        )
+        log.warning("dead-lettered", reason=reason, dead_letter_topic=self.topic, error=error)
 
     def close(self) -> None:
         self._producer.flush(10)

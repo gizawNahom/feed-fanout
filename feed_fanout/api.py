@@ -6,7 +6,6 @@ Docs: http://localhost:8000/docs
 """
 
 import base64
-import logging
 import uuid
 from collections.abc import Iterator
 from datetime import datetime
@@ -23,10 +22,11 @@ from sqlalchemy.orm import Session
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
+from feed_fanout.logs import configure_logging, get_logger
 from feed_fanout.models import FeedItem, Follow, OutboxEvent, Post
 
-logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-log = logging.getLogger("feed_fanout.api")
+configure_logging(settings.log_level, settings.log_format)
+log = get_logger("feed_fanout.api")
 
 
 app = FastAPI(title="feed-fanout")
@@ -85,7 +85,7 @@ def ready(session: SessionDep) -> JSONResponse:
     try:
         session.execute(text("SELECT 1"))
     except SQLAlchemyError as e:
-        log.warning("readiness check failed: database unavailable: %s", e.__class__.__name__)
+        log.warning("not ready: database unavailable", error=e.__class__.__name__)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"status": "unavailable", "checks": {"database": str(getattr(e, "orig", None) or e).strip()}},
@@ -108,7 +108,7 @@ def create_post(body: CreatePost, session: SessionDep, topic: TopicDep) -> PostO
     session.add(OutboxEvent(topic=topic, key=post.author_id, payload=event.model_dump_json()))
     session.commit()
 
-    log.info("post created post_id=%s author_id=%s", post.id, post.author_id)
+    log.info("post created", post_id=str(post.id), author_id=post.author_id)
     return PostOut.model_validate(post)
 
 
@@ -122,7 +122,7 @@ def follow(user_id: str, followee_id: str, session: SessionDep) -> Response:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "users cannot follow themselves")
     session.execute(insert(Follow).values(follower_id=user_id, followee_id=followee_id).on_conflict_do_nothing())
     session.commit()
-    log.info("follow follower_id=%s followee_id=%s", user_id, followee_id)
+    log.info("followed", follower_id=user_id, followee_id=followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -130,7 +130,7 @@ def follow(user_id: str, followee_id: str, session: SessionDep) -> Response:
 def unfollow(user_id: str, followee_id: str, session: SessionDep) -> Response:
     session.execute(delete(Follow).where(Follow.follower_id == user_id, Follow.followee_id == followee_id))
     session.commit()
-    log.info("unfollow follower_id=%s followee_id=%s", user_id, followee_id)
+    log.info("unfollowed", follower_id=user_id, followee_id=followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -1,5 +1,7 @@
 """Graceful shutdown and rebalances: stopping or adding workers never loses or stalls events."""
 
+import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -8,6 +10,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from typing import Any
 
 import pytest
 from confluent_kafka import ConsumerGroupTopicPartitions, KafkaError, KafkaException
@@ -68,15 +71,20 @@ class WorkerProcess:
             text=True,
         )
         self.lines: list[str] = []
+        self.events: list[dict[str, Any]] = []
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self) -> None:
+        # Not a terminal, so the worker logs JSON lines (LOG_FORMAT=auto).
         assert self.proc.stdout is not None
         for line in self.proc.stdout:
             self.lines.append(line)
+            with contextlib.suppress(json.JSONDecodeError):
+                self.events.append(json.loads(line))
 
-    def logged(self, text: str) -> bool:
-        return any(text in line for line in self.lines)
+    def logged(self, msg: str, **fields: Any) -> bool:
+        """Whether a log event with this message and these field values was emitted."""
+        return any(e.get("msg") == msg and all(e.get(k) == v for k, v in fields.items()) for e in self.events)
 
     def sigterm_and_wait(self, timeout: float = 15) -> float:
         start = time.monotonic()
@@ -163,7 +171,7 @@ def test_sigterm_during_retries_exits_promptly_without_committing(
     event = PostCreated(post_id=uuid.uuid4(), author_id="alice", created_at="2026-01-01T00:00:00Z")
     produce_raw(kafka_bootstrap, topic, key="alice", value=event.model_dump_json().encode())
     worker = spawn_worker("postgresql+psycopg://nobody:nothing@localhost:1/none")  # nothing listens here
-    wait_until(lambda: worker.logged("failed (transient)"), what="retrying")
+    wait_until(lambda: worker.logged("attempt failed, retrying", kind="transient"), what="retrying")
 
     # When it receives SIGTERM, even mid-backoff
     elapsed = worker.sigterm_and_wait()
@@ -178,7 +186,7 @@ def test_sigterm_during_retries_exits_promptly_without_committing(
 
 def test_second_sigterm_forces_exit(spawn_worker, postgres_url: str) -> None:
     worker = spawn_worker(postgres_url)
-    wait_until(lambda: worker.logged("consuming topic"), what="startup")
+    wait_until(lambda: worker.logged("consuming"), what="startup")
 
     worker.proc.send_signal(signal.SIGTERM)
     worker.proc.send_signal(signal.SIGTERM)

@@ -14,7 +14,6 @@ The offset is committed only once the event is fanned out or safely dead-lettere
 """
 
 import enum
-import logging
 import threading
 import time
 
@@ -24,17 +23,19 @@ from sqlalchemy import literal, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from structlog.contextvars import bound_contextvars
 
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
 from feed_fanout.health import Health, Heartbeat, start_health_server
 from feed_fanout.kafka import DeadLetterPublisher
+from feed_fanout.logs import configure_logging, get_logger
 from feed_fanout.models import FeedItem, Follow
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy, is_transient
 from feed_fanout.shutdown import install_signal_handlers
 
-log = logging.getLogger("feed_fanout.worker")
+log = get_logger("feed_fanout.worker")
 
 FOREIGN_KEY_VIOLATION = "23503"
 
@@ -76,7 +77,7 @@ def fan_out(session_factory: sessionmaker[Session], event: PostCreated) -> int:
         return len(session.execute(stmt).all())
 
 
-def handle(value: bytes | None, session_factory: sessionmaker[Session], where: str = "") -> int:
+def handle(value: bytes | None, session_factory: sessionmaker[Session]) -> int:
     """Process one event's payload. Returns feed rows added; raises PermanentError if it never can."""
     try:
         event = PostCreated.model_validate_json(value or b"")
@@ -88,7 +89,7 @@ def handle(value: bytes | None, session_factory: sessionmaker[Session], where: s
         if getattr(e.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
             raise PermanentError("unknown_post", f"post {event.post_id} does not exist") from e
         raise
-    log.info("fanned out post_id=%s author_id=%s feeds_added=%d %s", event.post_id, event.author_id, added, where)
+    log.info("fanned out", feeds_added=added)
     return added
 
 
@@ -103,6 +104,15 @@ REASSIGNED_ERRORS = {
     KafkaError.FENCED_MEMBER_EPOCH,
     KafkaError._ASSIGNMENT_LOST,
 }
+
+
+def _event_ids(value: bytes | None) -> dict[str, str]:
+    """post_id and author_id for log context; empty if the event is malformed."""
+    try:
+        event = PostCreated.model_validate_json(value or b"")
+    except ValidationError:
+        return {}
+    return {"post_id": str(event.post_id), "author_id": event.author_id}
 
 
 class FanoutWorker:
@@ -137,12 +147,17 @@ class FanoutWorker:
 
     def process(self, msg: Message) -> Outcome:
         """Fan out or dead-letter one message, then commit its offset."""
-        where = f"partition={msg.partition()} offset={msg.offset()}"
+        # Every log line while handling this message (retries, dead-lettering, ...) carries its
+        # partition, offset and, if readable, post ids. All are unbound again afterwards.
+        with bound_contextvars(partition=msg.partition(), offset=msg.offset(), **_event_ids(msg.value())):
+            return self._process(msg)
+
+    def _process(self, msg: Message) -> Outcome:
         attempt = 0
         while True:
             attempt += 1
             try:
-                handle(msg.value(), self.session_factory, where)
+                handle(msg.value(), self.session_factory)
                 outcome = Outcome.FANNED_OUT
                 self.heartbeat.success()
                 break
@@ -152,42 +167,38 @@ class FanoutWorker:
                 break
             except Exception as e:
                 if not is_transient(e) and attempt >= self.retry.max_unexpected_attempts:
-                    log.exception("giving up after %d attempts %s", attempt, where)
+                    log.exception("giving up", attempts=attempt)
                     self.dead_letters.send(msg, "unexpected", repr(e))
                     outcome = Outcome.DEAD_LETTERED
                     break
                 self.heartbeat.failure()
                 delay = self.retry.delay(attempt)
                 log.warning(
-                    "attempt %d failed (%s), retrying in %.1fs %s",
-                    attempt,
-                    "transient" if is_transient(e) else "unexpected",
-                    delay,
-                    where,
+                    "attempt failed, retrying",
+                    attempt=attempt,
+                    kind="transient" if is_transient(e) else "unexpected",
+                    error=repr(e),
+                    retry_in_s=round(delay, 2),
                 )
                 self._wait(delay)
                 if self._stopping.is_set():
                     # Shutting down mid-retry: leave the offset uncommitted so the event is
                     # re-delivered (to us after a restart, or to another worker).
-                    log.info("abandoning retries for shutdown %s", where)
+                    log.info("abandoning retries for shutdown")
                     return Outcome.ABANDONED
 
         # Only now is the event fanned out or safely dead-lettered.
-        self._commit(msg, where)
+        self._commit(msg)
         return outcome
 
-    def _commit(self, msg: Message, where: str) -> None:
+    def _commit(self, msg: Message) -> None:
         try:
             self.consumer.commit(message=msg, asynchronous=False)
         except KafkaException as e:
             if e.args[0].code() not in REASSIGNED_ERRORS:
                 raise
-            log.warning(
-                "commit rejected, partition was reassigned; the new owner will "
-                "re-process this event (harmless: fanout is idempotent) %s error=%s",
-                where,
-                e.args[0].name(),
-            )
+            # The new owner re-processes the event; harmless, since fanout is idempotent.
+            log.warning("commit rejected: partition was reassigned", error=e.args[0].name())
 
     def _wait(self, seconds: float) -> None:
         """Back off without being kicked out of the consumer group, and stop early on shutdown.
@@ -216,7 +227,7 @@ class FanoutWorker:
     def run(self, topic: str) -> None:
         self.consumer.subscribe([topic])
         self._subscribed = True
-        log.info("consuming topic=%s", topic)
+        log.info("consuming", topic=topic)
         try:
             while not self._stopping.is_set():
                 self.heartbeat.beat("consuming")
@@ -225,7 +236,7 @@ class FanoutWorker:
                 if msg is None:
                     continue
                 if msg.error():
-                    log.error("consumer error: %s", msg.error())
+                    log.error("consumer error", error=str(msg.error()))
                     continue
                 self.process(msg)
         finally:
@@ -253,8 +264,8 @@ def make_consumer(bootstrap_servers: str, group_id: str) -> Consumer:
 
 
 def main() -> None:
-    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    log.info("group=%s dead_letter_topic=%s", settings.fanout_group_id, settings.post_created_dlt_topic)
+    configure_logging(settings.log_level, settings.log_format)
+    log.info("starting", group=settings.fanout_group_id, dead_letter_topic=settings.post_created_dlt_topic)
     worker = FanoutWorker(
         make_consumer(settings.kafka_bootstrap_servers, settings.fanout_group_id),
         SessionLocal,
