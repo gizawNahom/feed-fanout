@@ -14,7 +14,7 @@ from collections.abc import Iterator
 import pytest
 from alembic import command
 from alembic.config import Config
-from confluent_kafka import Consumer, Message
+from confluent_kafka import Consumer, Message, TopicPartition
 from confluent_kafka.admin import AdminClient, NewTopic  # type: ignore[attr-defined]  # stubs lack the re-export
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, text
@@ -148,8 +148,10 @@ def dead_letters(kafka_bootstrap: str, dlt_topic: str) -> Iterator[DeadLetterPub
 class TopicReader:
     """Reads messages from one topic with its own consumer group, for assertions."""
 
-    def __init__(self, consumer: Consumer) -> None:
+    def __init__(self, consumer: Consumer, topic: str) -> None:
         self.consumer = consumer
+        self.topic = topic
+        self.read = 0  # messages returned so far
 
     def __call__(self, count: int, timeout: float = 20) -> list[Message]:
         messages: list[Message] = []
@@ -159,17 +161,25 @@ class TopicReader:
             if msg is not None and not msg.error():
                 messages.append(msg)
         assert len(messages) == count, f"expected {count} message(s), got {len(messages)}"
+        self.read += count
         return messages
 
-    def nothing_more(self, wait: float = 3) -> None:
-        msg = self.consumer.poll(wait)
-        assert msg is None or msg.error(), f"unexpected message: {msg.value()!r}"
+    def nothing_more(self) -> None:
+        """Assert the topic holds nothing beyond what was read: ask the broker how many
+        messages each partition holds (its offsets) and compare. Exact, with no waiting
+        for something that might still arrive."""
+        partitions = self.consumer.list_topics(self.topic, timeout=10).topics[self.topic].partitions
+        held = 0
+        for p in partitions:
+            low, high = self.consumer.get_watermark_offsets(TopicPartition(self.topic, p), timeout=10)
+            held += high - low
+        assert held == self.read, f"the topic holds {held} message(s), but {self.read} were read"
 
 
 def _reader(bootstrap: str, topic: str) -> Iterator[TopicReader]:
     consumer = make_consumer(bootstrap, group_id=f"test-reader-{uuid.uuid4().hex[:8]}")
     consumer.subscribe([topic])
-    yield TopicReader(consumer)
+    yield TopicReader(consumer, topic)
     consumer.close()
 
 
