@@ -5,29 +5,38 @@ Run: uv run uvicorn feed_fanout.api:app --reload
 Docs: http://localhost:8000/docs
 """
 
-import base64
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Depends, FastAPI, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select, text, tuple_
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from feed_fanout import metrics
+from feed_fanout.adapters.clock import SystemClock
+from feed_fanout.adapters.postgres import PostgresUnitOfWork
+from feed_fanout.application.ports import Clock
+from feed_fanout.application.use_cases import CreatePost, Follow, ReadFeed, Unfollow, UnitOfWorkFactory
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
-from feed_fanout.events import PostCreated
+from feed_fanout.domain.model import (
+    DEFAULT_PAGE_SIZE,
+    MAX_PAGE_SIZE,
+    MAX_POST_LENGTH,
+    MAX_USER_ID_LENGTH,
+    CannotFollowYourself,
+    InvalidCursor,
+    Rejected,
+)
 from feed_fanout.logs import configure_logging, get_logger
-from feed_fanout.models import FeedItem, Follow, OutboxEvent, Post
 
 configure_logging(settings.log_level, settings.log_format)
 log = get_logger("feed_fanout.api")
@@ -58,27 +67,43 @@ def prometheus_metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+# --- Wiring: which adapters the use cases get. Tests override these. ------------
+
+
 def get_session() -> Iterator[Session]:
+    """Only for the readiness check; everything else goes through the use cases."""
     with SessionLocal() as session:
         yield session
 
 
-def get_post_created_topic() -> str:
-    """Topic the outbox relay publishes PostCreated events to. Overridden in tests."""
-    return settings.post_created_topic
+def get_unit_of_work() -> UnitOfWorkFactory:
+    return lambda: PostgresUnitOfWork(SessionLocal, settings.post_created_topic)
+
+
+def get_clock() -> Clock:
+    return SystemClock()
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
-TopicDep = Annotated[str, Depends(get_post_created_topic)]
-UserId = Annotated[str, Field(min_length=1, max_length=64)]
+UnitOfWorkDep = Annotated[UnitOfWorkFactory, Depends(get_unit_of_work)]
+ClockDep = Annotated[Clock, Depends(get_clock)]
 
 
-# --- Schemas ----------------------------------------------------------------
+@app.exception_handler(Rejected)
+def rejected(request: Request, e: Rejected) -> JSONResponse:
+    """A broken domain rule becomes a 4xx: 400 for a bad request, 422 for invalid input."""
+    code = 400 if isinstance(e, CannotFollowYourself | InvalidCursor) else 422
+    return JSONResponse(status_code=code, content={"detail": str(e)})
 
 
-class CreatePost(BaseModel):
+# --- Schemas: the HTTP representation. Limits come from the domain, so they can't drift. ---
+
+UserId = Annotated[str, Field(min_length=1, max_length=MAX_USER_ID_LENGTH)]
+
+
+class CreatePostBody(BaseModel):
     author_id: UserId
-    text: str = Field(min_length=1, max_length=5000)
+    text: str = Field(min_length=1, max_length=MAX_POST_LENGTH)
 
 
 class PostOut(BaseModel):
@@ -90,7 +115,7 @@ class PostOut(BaseModel):
     created_at: datetime
 
 
-class FeedPage(BaseModel):
+class FeedPageOut(BaseModel):
     items: list[PostOut]
     next_cursor: str | None  # pass as ?cursor= to get the next (older) page
 
@@ -123,17 +148,8 @@ def ready(session: SessionDep) -> JSONResponse:
 
 
 @app.post("/posts", status_code=status.HTTP_201_CREATED)
-def create_post(body: CreatePost, session: SessionDep, topic: TopicDep) -> PostOut:
-    post = Post(author_id=body.author_id, text=body.text)
-    session.add(post)
-    session.flush()  # assigns id and created_at
-
-    # Transactional outbox: the event is saved in the same transaction as the post, so
-    # both are committed or neither is. The outbox relay publishes it to Kafka.
-    event = PostCreated(post_id=post.id, author_id=post.author_id, created_at=post.created_at)
-    session.add(OutboxEvent(topic=topic, key=post.author_id, payload=event.model_dump_json()))
-    session.commit()
-
+def create_post(body: CreatePostBody, unit_of_work: UnitOfWorkDep, clock: ClockDep) -> PostOut:
+    post = CreatePost(unit_of_work, clock)(body.author_id, body.text)
     log.info("post created", post_id=str(post.id), author_id=post.author_id)
     return PostOut.model_validate(post)
 
@@ -142,20 +158,16 @@ def create_post(body: CreatePost, session: SessionDep, topic: TopicDep) -> PostO
 
 
 @app.put("/users/{user_id}/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
-def follow(user_id: str, followee_id: str, session: SessionDep) -> Response:
+def follow(user_id: str, followee_id: str, unit_of_work: UnitOfWorkDep) -> Response:
     """Idempotent: following someone you already follow is a no-op."""
-    if user_id == followee_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "users cannot follow themselves")
-    session.execute(insert(Follow).values(follower_id=user_id, followee_id=followee_id).on_conflict_do_nothing())
-    session.commit()
+    Follow(unit_of_work)(user_id, followee_id)
     log.info("followed", follower_id=user_id, followee_id=followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.delete("/users/{user_id}/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
-def unfollow(user_id: str, followee_id: str, session: SessionDep) -> Response:
-    session.execute(delete(Follow).where(Follow.follower_id == user_id, Follow.followee_id == followee_id))
-    session.commit()
+def unfollow(user_id: str, followee_id: str, unit_of_work: UnitOfWorkDep) -> Response:
+    Unfollow(unit_of_work)(user_id, followee_id)
     log.info("unfollowed", follower_id=user_id, followee_id=followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -163,41 +175,13 @@ def unfollow(user_id: str, followee_id: str, session: SessionDep) -> Response:
 # --- Feed -------------------------------------------------------------------
 
 
-def _encode_cursor(created_at: datetime, post_id: uuid.UUID) -> str:
-    return base64.urlsafe_b64encode(f"{created_at.isoformat()}|{post_id}".encode()).decode()
-
-
-def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
-    try:
-        ts, pid = base64.urlsafe_b64decode(cursor.encode()).decode().split("|")
-        return datetime.fromisoformat(ts), uuid.UUID(pid)
-    except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid cursor") from None
-
-
 @app.get("/users/{user_id}/feed")
 def get_feed(
     user_id: str,
-    session: SessionDep,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    unit_of_work: UnitOfWorkDep,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
-) -> FeedPage:
+) -> FeedPageOut:
     """Newest first. Keyset pagination: stable even while new posts arrive, unlike OFFSET."""
-    query = (
-        select(Post, FeedItem.created_at)
-        .join(FeedItem, FeedItem.post_id == Post.id)
-        .where(FeedItem.user_id == user_id)
-        .order_by(FeedItem.created_at.desc(), FeedItem.post_id.desc())
-        .limit(limit + 1)  # fetch one extra to know whether there's a next page
-    )
-    if cursor:
-        ts, pid = _decode_cursor(cursor)
-        query = query.where(tuple_(FeedItem.created_at, FeedItem.post_id) < tuple_(ts, pid))
-
-    rows = session.execute(query).all()
-    page = rows[:limit]
-    next_cursor = None
-    if len(rows) > limit:
-        last_post, last_ts = page[-1]
-        next_cursor = _encode_cursor(last_ts, last_post.id)
-    return FeedPage(items=[PostOut.model_validate(p) for p, _ in page], next_cursor=next_cursor)
+    page = ReadFeed(unit_of_work)(user_id, limit, cursor)
+    return FeedPageOut(items=[PostOut.model_validate(p) for p in page.posts], next_cursor=page.next_cursor)

@@ -4,7 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.api import app, get_post_created_topic
+from feed_fanout.adapters.postgres import PostgresUnitOfWork
+from feed_fanout.api import app, get_unit_of_work
 from feed_fanout.events import PostCreated
 from feed_fanout.models import OutboxEvent, Post
 
@@ -25,7 +26,7 @@ def test_create_post_writes_event_to_outbox(
 
 def test_post_and_event_are_saved_atomically(client: TestClient, session_factory: sessionmaker[Session]) -> None:
     # Given the outbox insert will fail (topic name longer than the column allows)
-    app.dependency_overrides[get_post_created_topic] = lambda: "x" * 300
+    app.dependency_overrides[get_unit_of_work] = lambda: lambda: PostgresUnitOfWork(session_factory, "x" * 300)
 
     # When a post is created, the request fails...
     with pytest.raises(DBAPIError):

@@ -22,7 +22,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
-from feed_fanout.api import app, get_post_created_topic, get_session
+from feed_fanout.adapters.postgres import PostgresUnitOfWork
+from feed_fanout.api import app, get_session, get_unit_of_work
 from feed_fanout.kafka import DeadLetterPublisher, make_producer
 from feed_fanout.relay import OutboxRelay
 from feed_fanout.retry import RetryPolicy
@@ -199,7 +200,7 @@ def client(session_factory: sessionmaker[Session], topic: str) -> Iterator[TestC
             yield session
 
     app.dependency_overrides[get_session] = test_session
-    app.dependency_overrides[get_post_created_topic] = lambda: topic
+    app.dependency_overrides[get_unit_of_work] = lambda: lambda: PostgresUnitOfWork(session_factory, topic)
     with TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
