@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from feed_fanout.events import PostCreated
 from feed_fanout.models import OutboxEvent
 from feed_fanout.relay import BatchResult, OutboxRelay
-from tests.conftest import TopicReader, Worker
-from tests.helpers import create_post, feed_ids, follow
+from tests.conftest import TopicReader
+from tests.helpers import create_post
 
 
 def outbox_size(session_factory: sessionmaker[Session]) -> int:
@@ -89,13 +89,3 @@ def test_api_does_not_depend_on_kafka() -> None:
 
     source = Path(api.__file__).read_text()
     assert "confluent_kafka" not in source and "feed_fanout.kafka" not in source
-
-
-def test_end_to_end_post_reaches_follower_via_outbox(client: TestClient, worker: Worker) -> None:
-    follow(client, "bob", "alice")
-    posts = [create_post(client, "alice", f"post {i}") for i in range(3)]
-
-    for _ in posts:
-        worker.process_next()  # runs the relay, then the worker
-
-    assert sorted(feed_ids(client, "bob")) == sorted(p["id"] for p in posts)

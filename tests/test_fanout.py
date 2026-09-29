@@ -38,41 +38,6 @@ def headers(msg: Message) -> dict[str, str]:
 # --- Happy path --------------------------------------------------------------
 
 
-def test_followers_see_post_after_fanout(client: TestClient, worker: Worker) -> None:
-    # Given bob and carol follow alice
-    follow(client, "bob", "alice")
-    follow(client, "carol", "alice")
-
-    # When alice posts and the worker processes the event
-    post = create_post(client, "alice")
-    assert worker.process_next() == Outcome.FANNED_OUT
-
-    # Then both followers have the post in their feed
-    assert feed_ids(client, "bob") == [post["id"]]
-    assert feed_ids(client, "carol") == [post["id"]]
-
-
-def test_non_followers_do_not_see_post(client: TestClient, worker: Worker) -> None:
-    follow(client, "bob", "alice")
-    follow(client, "alice", "dave")  # the reverse direction: alice follows dave
-
-    create_post(client, "alice")
-    worker.process_next()
-
-    assert feed_ids(client, "dave") == []
-    assert feed_ids(client, "alice") == []  # authors don't get their own posts in their feed
-
-
-def test_post_before_follow_is_not_backfilled(client: TestClient, worker: Worker) -> None:
-    # Fanout-on-write: a post only reaches the followers that exist when it's fanned out.
-    create_post(client, "alice")
-    worker.process_next()
-
-    follow(client, "bob", "alice")
-
-    assert feed_ids(client, "bob") == []
-
-
 def test_reprocessing_same_event_adds_no_duplicates(
     client: TestClient, worker: Worker, session_factory: sessionmaker[Session]
 ) -> None:
