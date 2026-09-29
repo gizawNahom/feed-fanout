@@ -14,7 +14,7 @@ from prometheus_client import REGISTRY
 from sqlalchemy.orm import Session, sessionmaker
 
 import feed_fanout.metrics  # noqa: F401  (registers the app's metrics)
-from feed_fanout.relay import OutboxCollector
+from feed_fanout.adapters.kafka.relay import OutboxCollector
 
 OBSERVABILITY = Path(__file__).parent.parent / "observability"
 RULES = OBSERVABILITY / "prometheus" / "rules.yml"

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.models import FeedItem, Post
+from feed_fanout.adapters.postgres.models import FeedItem, Post
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
 

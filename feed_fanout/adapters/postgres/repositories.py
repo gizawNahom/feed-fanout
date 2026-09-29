@@ -10,11 +10,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout import models
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.postgres import models
 from feed_fanout.application.ports import UnknownPost
 from feed_fanout.domain.feed import FeedPosition
 from feed_fanout.domain.model import Post
-from feed_fanout.events import PostCreated
 
 FOREIGN_KEY_VIOLATION = "23503"
 

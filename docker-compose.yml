@@ -135,7 +135,7 @@ services:
   # HTTP API: http://localhost:8000/docs
   api:
     <<: *app
-    command: ["uvicorn", "feed_fanout.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
     depends_on:
@@ -151,7 +151,7 @@ services:
   # Publishes outbox rows to Kafka.
   relay:
     <<: *app
-    command: ["python", "-m", "feed_fanout.relay"]
+    command: ["python", "-m", "feed_fanout.adapters.kafka.relay"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -168,7 +168,7 @@ services:
   # Fanout workers. Scale with: docker compose up -d --scale worker=3
   worker:
     <<: *app
-    command: ["python", "-m", "feed_fanout.worker"]
+    command: ["python", "-m", "feed_fanout.adapters.kafka.worker"]
     depends_on:
       migrate:
         condition: service_completed_successfully

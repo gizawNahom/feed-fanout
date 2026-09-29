@@ -1,7 +1,7 @@
 """
 HTTP API: create posts, follow users, read feeds.
 
-Run: uv run uvicorn feed_fanout.api:app --reload
+Run: uv run uvicorn feed_fanout.adapters.http:app --reload
 Docs: http://localhost:8000/docs
 """
 
@@ -22,11 +22,11 @@ from sqlalchemy.orm import Session
 
 from feed_fanout import metrics
 from feed_fanout.adapters.clock import SystemClock
-from feed_fanout.adapters.postgres import PostgresUnitOfWork
+from feed_fanout.adapters.postgres.db import SessionLocal
+from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
 from feed_fanout.application.ports import Clock
 from feed_fanout.application.use_cases import CreatePost, Follow, ReadFeed, Unfollow, UnitOfWorkFactory
 from feed_fanout.config import settings
-from feed_fanout.db import SessionLocal
 from feed_fanout.domain.model import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -39,7 +39,7 @@ from feed_fanout.domain.model import (
 from feed_fanout.logs import configure_logging, get_logger
 
 configure_logging(settings.log_level, settings.log_format)
-log = get_logger("feed_fanout.api")
+log = get_logger("feed_fanout.adapters.http")
 
 
 app = FastAPI(title="feed-fanout")

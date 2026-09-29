@@ -18,9 +18,9 @@ from httpx2 import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.models import OutboxEvent
-from feed_fanout.relay import OutboxRelay
-from feed_fanout.worker import Outcome
+from feed_fanout.adapters.kafka.relay import OutboxRelay
+from feed_fanout.adapters.kafka.worker import Outcome
+from feed_fanout.adapters.postgres.models import OutboxEvent
 from tests.acceptance.contract import FeedPage, Post, Rejected
 from tests.conftest import Worker
 

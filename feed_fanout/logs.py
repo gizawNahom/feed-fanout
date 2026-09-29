@@ -7,7 +7,7 @@ Log calls pass fields as keywords, not formatted into the message:
 
 and each line becomes either JSON (for log systems: filter on post_id, not grep text)
 
-    {"ts": "2026-09-28T10:00:00Z", "level": "info", "logger": "feed_fanout.worker",
+    {"ts": "2026-09-28T10:00:00Z", "level": "info", "logger": "feed_fanout.adapters.kafka.worker",
      "msg": "fanned out", "post_id": "…", "feeds_added": 3, "partition": 0, "offset": 42}
 
 or readable text for a terminal. LOG_FORMAT=auto (the default) picks text when stdout is a

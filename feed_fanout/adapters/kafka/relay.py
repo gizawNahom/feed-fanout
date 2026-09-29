@@ -1,7 +1,7 @@
 """
 Outbox relay: publishes events from the `outbox` table to Kafka.
 
-Run: uv run python -m feed_fanout.relay
+Run: uv run python -m feed_fanout.adapters.kafka.relay
 
 The API writes a post and its PostCreated event in one transaction, so there's never a
 post without an event (or the reverse). This process moves the events to Kafka:
@@ -28,16 +28,16 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from feed_fanout import metrics
+from feed_fanout.adapters.kafka.producers import close_producer, make_producer
+from feed_fanout.adapters.postgres.db import SessionLocal
+from feed_fanout.adapters.postgres.models import OutboxEvent
 from feed_fanout.config import settings
-from feed_fanout.db import SessionLocal
 from feed_fanout.health import Health, Heartbeat, start_health_server
-from feed_fanout.kafka import close_producer, make_producer
 from feed_fanout.logs import configure_logging, get_logger
-from feed_fanout.models import OutboxEvent
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy
 from feed_fanout.shutdown import install_signal_handlers
 
-log = get_logger("feed_fanout.relay")
+log = get_logger("feed_fanout.adapters.kafka.relay")
 
 
 @dataclass(frozen=True)

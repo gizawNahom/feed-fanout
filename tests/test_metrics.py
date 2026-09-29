@@ -10,10 +10,10 @@ from prometheus_client import REGISTRY
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from feed_fanout.adapters.kafka.relay import OutboxCollector, OutboxRelay
+from feed_fanout.adapters.kafka.worker import Outcome
+from feed_fanout.adapters.postgres.models import OutboxEvent
 from feed_fanout.health import Health, HealthServer
-from feed_fanout.models import OutboxEvent
-from feed_fanout.relay import OutboxCollector, OutboxRelay
-from feed_fanout.worker import Outcome
 from tests.conftest import Worker
 from tests.helpers import create_post, follow
 from tests.test_fanout import DB_DOWN, failing_n_times, produce_raw

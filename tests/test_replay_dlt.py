@@ -9,11 +9,11 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.events import PostCreated
-from feed_fanout.kafka import close_producer, make_producer
-from feed_fanout.models import FeedItem, Follow, Post
-from feed_fanout.replay_dlt import main, read_dead_letters, replay
-from feed_fanout.worker import Outcome
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.kafka.producers import close_producer, make_producer
+from feed_fanout.adapters.kafka.replay_dlt import main, read_dead_letters, replay
+from feed_fanout.adapters.kafka.worker import Outcome
+from feed_fanout.adapters.postgres.models import FeedItem, Follow, Post
 from tests.conftest import TopicReader, Worker
 from tests.helpers import follow
 from tests.test_fanout import produce_raw

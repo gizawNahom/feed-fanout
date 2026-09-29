@@ -11,11 +11,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.kafka.producers import close_producer, headers_of
+from feed_fanout.adapters.kafka.worker import Outcome, PermanentError, handle
+from feed_fanout.adapters.postgres.models import FeedItem
 from feed_fanout.application.use_cases import FanOutPost
-from feed_fanout.events import PostCreated
-from feed_fanout.kafka import close_producer, headers_of
-from feed_fanout.models import FeedItem
-from feed_fanout.worker import Outcome, PermanentError, handle
 from tests.conftest import TopicReader, Worker, postgres_fan_out
 from tests.helpers import create_post, feed_ids, follow
 

@@ -2,9 +2,9 @@
 Replay dead letters: inspect the dead-letter topic, then send events back to their
 original topic once the cause is fixed.
 
-    uv run python -m feed_fanout.replay_dlt                          # dry run: list what's there
-    uv run python -m feed_fanout.replay_dlt --reason unexpected --execute
-    uv run python -m feed_fanout.replay_dlt --from-offset 3 --to-offset 7 --execute
+    uv run python -m feed_fanout.adapters.kafka.replay_dlt                          # dry run: list what's there
+    uv run python -m feed_fanout.adapters.kafka.replay_dlt --reason unexpected --execute
+    uv run python -m feed_fanout.adapters.kafka.replay_dlt --from-offset 3 --to-offset 7 --execute
 
 Stateless: it selects dead letters by offset range and reason and never commits anything,
 so a filtered run doesn't use up the dead letters it skipped. Replaying the same event
@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 
 from confluent_kafka import Consumer, KafkaError, Producer, TopicPartition
 
+from feed_fanout.adapters.kafka.producers import REPLAY_COUNT_HEADER, Headers, close_producer, headers_of, make_producer
 from feed_fanout.config import settings
-from feed_fanout.kafka import REPLAY_COUNT_HEADER, Headers, close_producer, headers_of, make_producer
 
 
 @dataclass(frozen=True)

@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.relay import OutboxRelay
+from feed_fanout.adapters.kafka.relay import OutboxRelay
 from tests.acceptance.contract import System
 from tests.acceptance.full import FullSystem
 from tests.conftest import Worker

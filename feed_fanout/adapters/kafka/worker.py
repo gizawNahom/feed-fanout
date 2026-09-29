@@ -2,7 +2,7 @@
 Fanout worker: consumes PostCreated events and writes the post into every
 follower's feed in Postgres.
 
-Run: uv run python -m feed_fanout.worker   (start several to scale out)
+Run: uv run python -m feed_fanout.adapters.kafka.worker   (start several to scale out)
 
 Failure handling:
   - Permanent failures (malformed event, unknown post) go to the dead-letter topic.
@@ -22,19 +22,19 @@ from pydantic import ValidationError
 from structlog.contextvars import bound_contextvars
 
 from feed_fanout import metrics
-from feed_fanout.adapters.postgres import PostgresUnitOfWork
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.kafka.producers import DeadLetterPublisher
+from feed_fanout.adapters.postgres.db import SessionLocal
+from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
 from feed_fanout.application.ports import UnknownPost
 from feed_fanout.application.use_cases import FanOutPost
 from feed_fanout.config import settings
-from feed_fanout.db import SessionLocal
-from feed_fanout.events import PostCreated
 from feed_fanout.health import Health, Heartbeat, start_health_server
-from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.logs import configure_logging, get_logger
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy, is_transient
 from feed_fanout.shutdown import install_signal_handlers
 
-log = get_logger("feed_fanout.worker")
+log = get_logger("feed_fanout.adapters.kafka.worker")
 
 
 class Outcome(enum.Enum):

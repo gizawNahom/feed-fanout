@@ -101,9 +101,9 @@ Requires [uv](https://docs.astral.sh/uv/). Start only the infrastructure and set
 
 ```bash
 docker compose up -d kafka postgres kafka-ui adminer kafka-topics migrate
-uv run uvicorn feed_fanout.api:app --reload
-uv run python -m feed_fanout.relay
-uv run python -m feed_fanout.worker
+uv run uvicorn feed_fanout.adapters.http:app --reload
+uv run python -m feed_fanout.adapters.kafka.relay
+uv run python -m feed_fanout.adapters.kafka.worker
 ```
 
 ## API
@@ -148,7 +148,7 @@ The worker commits an event's offset only once it has been fanned out **or** saf
 Browse them in Kafka UI (topic `post-created.dlt`, headers included), or use the replay tool. It runs as a **dry run by default**:
 
 ```bash
-uv run python -m feed_fanout.replay_dlt
+uv run python -m feed_fanout.adapters.kafka.replay_dlt
 #   3 dead letter(s) in post-created.dlt: unexpected=2, malformed=1
 #   would replay: partition 0 offset 4  key=alice  reason=unexpected  replays=0  failed_at=...
 #       error: ValueError('bug')
@@ -157,8 +157,8 @@ uv run python -m feed_fanout.replay_dlt
 Once the cause is fixed (say, the bug fix is deployed), send the events back to their original topic, where they're processed like any new event:
 
 ```bash
-uv run python -m feed_fanout.replay_dlt --reason unexpected --execute
-uv run python -m feed_fanout.replay_dlt --from-offset 3 --to-offset 7 --execute
+uv run python -m feed_fanout.adapters.kafka.replay_dlt --reason unexpected --execute
+uv run python -m feed_fanout.adapters.kafka.replay_dlt --from-offset 3 --to-offset 7 --execute
 ```
 
 - **Stateless.** It selects by offset range and reason and never commits anything, so a filtered run doesn't use up the dead letters it skipped. Replaying twice is harmless, since fanout is idempotent. The dead-letter topic is never modified.
@@ -258,8 +258,8 @@ make up-observability     # = docker compose --profile observability up -d --bui
 Every process logs through [structlog](https://www.structlog.org/): fields are keywords, not text inside the message. On a terminal you get readable text; anywhere else (containers, CI, files) one JSON object per line, ready for Loki, Datadog, CloudWatch & co.:
 
 ```json
-{"msg": "post created", "post_id": "18822c67-…", "author_id": "alice", "logger": "feed_fanout.api", "level": "info", "ts": "2026-09-28T13:57:58.451Z"}
-{"msg": "fanned out", "feeds_added": 3, "post_id": "18822c67-…", "author_id": "alice", "partition": 0, "offset": 29, "logger": "feed_fanout.worker", "level": "info", "ts": "2026-09-28T13:57:59.171Z"}
+{"msg": "post created", "post_id": "18822c67-…", "author_id": "alice", "logger": "feed_fanout.adapters.http", "level": "info", "ts": "2026-09-28T13:57:58.451Z"}
+{"msg": "fanned out", "feeds_added": 3, "post_id": "18822c67-…", "author_id": "alice", "partition": 0, "offset": 29, "logger": "feed_fanout.adapters.kafka.worker", "level": "info", "ts": "2026-09-28T13:57:59.171Z"}
 ```
 
 - **Follow one post across processes:** filter on `post_id` instead of grepping text. The worker binds the event's `post_id`, `author_id`, `partition`, and `offset` once per message, so *every* line while handling it (retries, dead-lettering) carries them automatically, and they're unbound afterwards so they never leak into the next message's lines.

@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.events import PostCreated
-from feed_fanout.models import OutboxEvent
-from feed_fanout.relay import BatchResult, OutboxRelay
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.kafka.relay import BatchResult, OutboxRelay
+from feed_fanout.adapters.postgres.models import OutboxEvent
 from tests.conftest import TopicReader
 from tests.helpers import create_post
 
@@ -85,7 +85,7 @@ def test_rows_locked_by_another_relay_are_skipped(
 def test_api_does_not_depend_on_kafka() -> None:
     # Posting only writes to Postgres, so it keeps working while Kafka is down.
     # Checked structurally: the API module never imports a Kafka client.
-    import feed_fanout.api as api
+    import feed_fanout.adapters.http as api
 
     source = Path(api.__file__).read_text()
-    assert "confluent_kafka" not in source and "feed_fanout.kafka" not in source
+    assert "confluent_kafka" not in source and "feed_fanout.adapters.kafka.producers" not in source

@@ -3,8 +3,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from feed_fanout.adapters.postgres.models import Base
 from feed_fanout.config import settings
-from feed_fanout.models import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

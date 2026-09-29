@@ -9,10 +9,10 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from feed_fanout.adapters.kafka.producers import headers_of
+from feed_fanout.adapters.kafka.worker import Outcome
 from feed_fanout.application.use_cases import FanOutPost
-from feed_fanout.kafka import headers_of
 from feed_fanout.retry import is_transient
-from feed_fanout.worker import Outcome
 from tests.conftest import TopicReader, Worker
 from tests.helpers import create_post, follow
 

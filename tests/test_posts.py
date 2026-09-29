@@ -4,10 +4,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.adapters.postgres import PostgresUnitOfWork
-from feed_fanout.api import app, get_unit_of_work
-from feed_fanout.events import PostCreated
-from feed_fanout.models import OutboxEvent, Post
+from feed_fanout.adapters.http import app, get_unit_of_work
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.postgres.models import OutboxEvent, Post
+from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
 
 
 def test_create_post_writes_event_to_outbox(

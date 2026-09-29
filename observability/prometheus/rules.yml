@@ -67,7 +67,7 @@ groups:
           severity: ticket
         annotations:
           summary: Events were moved to the dead-letter topic
-          description: Some events could not be processed and need a human. Inspect them with `python -m feed_fanout.replay_dlt`.
+          description: Some events could not be processed and need a human. Inspect them with `python -m feed_fanout.adapters.kafka.replay_dlt`.
 
       - alert: APIErrorRateHigh
         expr: |

@@ -19,11 +19,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.events import PostCreated
-from feed_fanout.kafka import DeadLetterPublisher
-from feed_fanout.models import FeedItem
-from feed_fanout.relay import OutboxRelay
-from feed_fanout.worker import FanoutWorker, Outcome, make_consumer
+from feed_fanout.adapters.kafka.events import PostCreated
+from feed_fanout.adapters.kafka.producers import DeadLetterPublisher
+from feed_fanout.adapters.kafka.relay import OutboxRelay
+from feed_fanout.adapters.kafka.worker import FanoutWorker, Outcome, make_consumer
+from feed_fanout.adapters.postgres.models import FeedItem
 from tests.conftest import FAST_RETRY, postgres_fan_out
 from tests.helpers import create_post, follow
 
@@ -60,11 +60,11 @@ class Group:
 
 
 class WorkerProcess:
-    """`python -m feed_fanout.worker` as a real OS process, so real signals can be sent to it."""
+    """`python -m feed_fanout.adapters.kafka.worker` as a real OS process, so real signals can be sent to it."""
 
     def __init__(self, env: dict[str, str]) -> None:
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "feed_fanout.worker"],
+            [sys.executable, "-m", "feed_fanout.adapters.kafka.worker"],
             env={**os.environ, **env},
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

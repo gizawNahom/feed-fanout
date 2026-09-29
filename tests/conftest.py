@@ -22,13 +22,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
-from feed_fanout.adapters.postgres import PostgresUnitOfWork
-from feed_fanout.api import app, get_session, get_unit_of_work
+from feed_fanout.adapters.http import app, get_session, get_unit_of_work
+from feed_fanout.adapters.kafka.producers import DeadLetterPublisher, make_producer
+from feed_fanout.adapters.kafka.relay import OutboxRelay
+from feed_fanout.adapters.kafka.worker import FanoutWorker, Outcome, make_consumer
+from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
 from feed_fanout.application.use_cases import FanOutPost
-from feed_fanout.kafka import DeadLetterPublisher, make_producer
-from feed_fanout.relay import OutboxRelay
 from feed_fanout.retry import RetryPolicy
-from feed_fanout.worker import FanoutWorker, Outcome, make_consumer
 
 KAFKA_IMAGE = "apache/kafka:4.3.1"  # same images as docker-compose.yml
 POSTGRES_IMAGE = "postgres:18.6-alpine"

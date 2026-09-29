@@ -13,11 +13,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.api import app, get_session
+from feed_fanout.adapters.http import app, get_session
+from feed_fanout.adapters.kafka.producers import DeadLetterPublisher
+from feed_fanout.adapters.kafka.relay import OutboxRelay
+from feed_fanout.adapters.kafka.worker import FanoutWorker, make_consumer
 from feed_fanout.health import Health, HealthServer, Heartbeat, start_health_server
-from feed_fanout.kafka import DeadLetterPublisher
-from feed_fanout.relay import OutboxRelay
-from feed_fanout.worker import FanoutWorker, make_consumer
 from tests.conftest import FAST_RETRY, postgres_fan_out
 
 
@@ -199,7 +199,7 @@ def test_worker_stays_live_while_backing_off(worker: Any) -> None:
 
 
 def test_relay_health_reflects_publish_failures(relay: OutboxRelay, session_factory: sessionmaker[Session]) -> None:
-    from feed_fanout.models import OutboxEvent
+    from feed_fanout.adapters.postgres.models import OutboxEvent
 
     with session_factory.begin() as session:
         session.add(OutboxEvent(topic="no-such-topic", key="k", payload="{}"))  # will fail to publish

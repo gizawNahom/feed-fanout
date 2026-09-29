@@ -1,7 +1,7 @@
 # One image for every process; docker-compose.yml picks the command:
-#   api     uvicorn feed_fanout.api:app --host 0.0.0.0
-#   worker  python -m feed_fanout.worker
-#   relay   python -m feed_fanout.relay
+#   api     uvicorn feed_fanout.adapters.http:app --host 0.0.0.0
+#   worker  python -m feed_fanout.adapters.kafka.worker
+#   relay   python -m feed_fanout.adapters.kafka.relay
 #   migrate alembic upgrade head
 
 # --- Build: install dependencies into a virtualenv ---------------------------------
@@ -40,4 +40,4 @@ USER app
 
 # Exec form (no shell), so the process is PID 1 and receives SIGTERM directly:
 # docker stop triggers the graceful shutdown instead of a kill after the timeout.
-CMD ["uvicorn", "feed_fanout.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000"]
