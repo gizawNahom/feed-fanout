@@ -22,6 +22,7 @@ from feed_fanout.adapters.kafka.relay import OutboxRelay
 from feed_fanout.adapters.kafka.worker import Outcome
 from feed_fanout.adapters.postgres.models import OutboxEvent
 from tests.acceptance.contract import FeedPage, Post, Rejected
+from tests.auth_keys import auth_header
 from tests.conftest import Worker
 
 
@@ -35,20 +36,20 @@ class FullSystem:
         self.session_factory = session_factory
 
     def follow(self, user: str, followee: str) -> None:
-        self._expect(self.client.put(f"/users/{user}/following/{followee}"), 204)
+        self._expect(self.client.put(f"/me/following/{followee}", headers=auth_header(user)), 204)
 
     def unfollow(self, user: str, followee: str) -> None:
-        self._expect(self.client.delete(f"/users/{user}/following/{followee}"), 204)
+        self._expect(self.client.delete(f"/me/following/{followee}", headers=auth_header(user)), 204)
 
     def post(self, author: str, text: str = "hello") -> Post:
-        body = self._expect(self.client.post("/posts", json={"author_id": author, "text": text}), 201).json()
+        body = self._expect(self.client.post("/posts", json={"text": text}, headers=auth_header(author)), 201).json()
         return Post(id=body["id"], author_id=body["author_id"], text=body["text"])
 
     def feed(self, user: str, limit: int = 20, cursor: str | None = None) -> FeedPage:
         params: dict[str, Any] = {"limit": limit}
         if cursor is not None:
             params["cursor"] = cursor
-        body = self._expect(self.client.get(f"/users/{user}/feed", params=params), 200).json()
+        body = self._expect(self.client.get("/me/feed", params=params, headers=auth_header(user)), 200).json()
         return FeedPage(
             posts=[Post(id=p["id"], author_id=p["author_id"], text=p["text"]) for p in body["items"]],
             next_cursor=body["next_cursor"],
@@ -69,7 +70,9 @@ class FullSystem:
 
     @staticmethod
     def _expect(response: Response, status: int) -> Response:
-        if response.status_code in (400, 422):
+        # Refused: invalid input (400/422), or an identity that can't be valid (401: e.g. an
+        # empty or over-long user id can't authenticate).
+        if response.status_code in (400, 401, 422):
             raise Rejected(response.text)
         assert response.status_code == status, response.text
         return response

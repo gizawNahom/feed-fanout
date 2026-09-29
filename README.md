@@ -24,7 +24,7 @@ POST /posts ──► API ──► Postgres: posts + outbox
                                                         ▼
                                                   "post-created.dlt"
 
-GET /users/{id}/feed ──► API ──► Postgres: feed_items ⨝ posts (newest first)
+GET /me/feed ───────► API ──► Postgres: feed_items ⨝ posts (newest first)
 ```
 
 **The trade-off:** posting is fast and reads are cheap, but feeds are *eventually consistent*. A new post takes a moment to reach every follower.
@@ -57,10 +57,13 @@ That starts everything and waits until it's healthy: Kafka and Postgres, a one-s
 Try it:
 
 ```bash
-curl -X PUT localhost:8000/users/bob/following/alice                  # bob follows alice
-curl -X POST localhost:8000/posts -H 'content-type: application/json' \
-  -d '{"author_id": "alice", "text": "hello world"}'                   # alice posts
-curl localhost:8000/users/bob/feed                                    # bob's feed
+ALICE="Authorization: Bearer $(make -s token AS=alice)"               # dev access tokens
+BOB="Authorization: Bearer $(make -s token AS=bob)"
+
+curl -X PUT localhost:8000/me/following/alice -H "$BOB"               # bob follows alice
+curl -X POST localhost:8000/posts -H "$ALICE" \
+  -H 'content-type: application/json' -d '{"text": "hello world"}'     # alice posts
+curl localhost:8000/me/feed -H "$BOB"                                 # bob's feed
 ```
 
 More:
@@ -128,12 +131,26 @@ feed_fanout/
 
 ## API
 
+Every call acts as the user in its access token (`Authorization: Bearer …`); there's no user id in bodies or paths.
+
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/posts` | Create a post `{author_id, text}` → `201` with the post |
-| `PUT` | `/users/{id}/following/{followee}` | Follow (idempotent) → `204` |
-| `DELETE` | `/users/{id}/following/{followee}` | Unfollow → `204` |
-| `GET` | `/users/{id}/feed?limit=20&cursor=…` | Feed, newest first. Pass `next_cursor` from the response to get older posts. |
+| `POST` | `/posts` | Post `{text}` as yourself → `201` with the post |
+| `PUT` | `/me/following/{followee}` | Follow (idempotent) → `204` |
+| `DELETE` | `/me/following/{followee}` | Unfollow → `204` |
+| `GET` | `/me/feed?limit=20&cursor=…` | Your feed (feeds are private), newest first. Pass `next_cursor` from the response to get older posts. |
+
+Missing or invalid token → `401`. Health checks and `/metrics` need no token (they're for probes and Prometheus; in production, keep them off the public network).
+
+### Authentication
+
+The API doesn't manage users or passwords. An **identity provider** (Auth0, Keycloak, Cognito, ...) logs users in and signs **JWT access tokens** with its private key; the API only verifies them, with the provider's **public** keys from its JWKS URL. A public key can check a token but can't create one, so even a compromised API can't forge identities.
+
+- **Every token is checked** for its signature, expiry, issuer, audience and subject. The algorithm is **pinned to RS256**, so the classic forgeries are refused: an unsigned token (`alg: none`), or an HMAC "signature" made with the public key.
+- **Key rotation needs no deploy:** each token names its key (`kid`), and a key we haven't seen triggers a re-fetch of the JWKS, at most every 30 s so made-up key ids can't flood the provider.
+- **Identity comes only from the token.** With no user id in any body or path, "acting as someone else" can't even be expressed: no per-route permission check to forget.
+- **Configuration** (production): `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` from your provider.
+- **Local development** uses a stand-in: the `dev-keys` service makes a key pair on first start (never committed), the API trusts its public key, and `make token AS=alice` prints a token. That single, non-rotating key is **only accepted with `ENVIRONMENT=dev`**: configured anywhere else, the settings are rejected, and without a JWKS URL a production API refuses to start.
 
 ## The outbox
 
@@ -210,6 +227,8 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `FANOUT_GROUP_ID` | `fanout-workers` |
 | `LOG_LEVEL` | `INFO` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_FORMAT` | `auto`: readable text on a terminal, JSON otherwise (`json`, `text` to force) |
+| `ENVIRONMENT` | `production` (anything but `dev` is treated as production) |
+| `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` | how to verify access tokens (see [Authentication](#authentication)) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
 | `RELAY_HEALTH_PORT` | `8002` (`0` disables) |
 
@@ -287,7 +306,7 @@ make up-observability     # = docker compose --profile observability up -d --bui
 | `feed_fanout_outbox_backlog`, `…_oldest_age_seconds` | Is publishing keeping up? The oldest event's age matters more than the count |
 | `feed_fanout_worker_retries_total{kind}`, `feed_fanout_dead_letters_total{reason}` | Problems that would otherwise be quiet |
 
-- **Labels are low-cardinality only:** routes are recorded as templates (`/users/{user_id}/feed`), never raw paths, and nothing is labelled by user or post. Every distinct label value is a new time series; per-post detail lives in the logs.
+- **Labels are low-cardinality only:** routes are recorded as templates (`/me/following/{followee_id}`), never raw paths, and nothing is labelled by user or post. Every distinct label value is a new time series; per-post detail lives in the logs.
 - **Every worker is scraped,** including ones added with `--scale worker=N`: Prometheus discovers them through Compose's DNS.
 
 **SLO: 99% of posts reach followers' feeds within 5 seconds.** Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.

@@ -13,12 +13,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from feed_fanout.adapters.http import app, get_session
+from feed_fanout.adapters.http import app, get_session, get_token_verifier
 from feed_fanout.adapters.kafka.producers import DeadLetterPublisher
 from feed_fanout.adapters.kafka.relay import OutboxRelay
 from feed_fanout.adapters.kafka.worker import FanoutWorker, make_consumer
 from feed_fanout.health import Health, HealthServer, Heartbeat, start_health_server
-from tests.conftest import FAST_RETRY, postgres_fan_out
+from tests.conftest import FAST_RETRY, TEST_VERIFIER, postgres_fan_out
 
 
 def get(port: int, path: str) -> tuple[int, dict[str, Any]]:
@@ -57,6 +57,7 @@ def test_api_not_ready_but_still_live_when_database_is_down() -> None:
             yield session
 
     app.dependency_overrides[get_session] = broken_session
+    app.dependency_overrides[get_token_verifier] = lambda: TEST_VERIFIER
     try:
         with TestClient(app) as client:
             ready = client.get("/health/ready")

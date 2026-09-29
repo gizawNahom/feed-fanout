@@ -22,13 +22,18 @@ from sqlalchemy.orm import Session, sessionmaker
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
-from feed_fanout.adapters.http import app, get_session, get_unit_of_work
+from feed_fanout.adapters.auth import StaticKey, TokenVerifier
+from feed_fanout.adapters.http import app, get_session, get_token_verifier, get_unit_of_work
 from feed_fanout.adapters.kafka.producers import DeadLetterPublisher, make_producer
 from feed_fanout.adapters.kafka.relay import OutboxRelay
 from feed_fanout.adapters.kafka.worker import FanoutWorker, Outcome, make_consumer
 from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
 from feed_fanout.application.use_cases import FanOutPost
 from feed_fanout.retry import RetryPolicy
+from tests import auth_keys
+
+# The API trusts tokens from the test identity provider (tests/auth_keys.py).
+TEST_VERIFIER = TokenVerifier(StaticKey(auth_keys.PUBLIC_KEY), issuer=auth_keys.ISSUER, audience=auth_keys.AUDIENCE)
 
 KAFKA_IMAGE = "apache/kafka:4.3.1"  # same images as docker-compose.yml
 POSTGRES_IMAGE = "postgres:18.6-alpine"
@@ -211,6 +216,7 @@ def client(session_factory: sessionmaker[Session], topic: str) -> Iterator[TestC
             yield session
 
     app.dependency_overrides[get_session] = test_session
+    app.dependency_overrides[get_token_verifier] = lambda: TEST_VERIFIER
     app.dependency_overrides[get_unit_of_work] = lambda: lambda: PostgresUnitOfWork(session_factory, topic)
     with TestClient(app) as client:
         yield client

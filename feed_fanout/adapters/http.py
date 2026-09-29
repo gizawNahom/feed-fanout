@@ -7,13 +7,16 @@ Docs: http://localhost:8000/docs
 
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager
 from datetime import datetime
+from functools import lru_cache
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Query, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -21,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from feed_fanout import metrics
+from feed_fanout.adapters.auth import InvalidToken, TokenVerifier, build_verifier
 from feed_fanout.adapters.clock import SystemClock
 from feed_fanout.adapters.postgres.db import SessionLocal
 from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
@@ -31,7 +35,6 @@ from feed_fanout.domain.model import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
     MAX_POST_LENGTH,
-    MAX_USER_ID_LENGTH,
     CannotFollowYourself,
     InvalidCursor,
     Rejected,
@@ -42,7 +45,19 @@ configure_logging(settings.log_level, settings.log_format)
 log = get_logger("feed_fanout.adapters.http")
 
 
-app = FastAPI(title="feed-fanout")
+@lru_cache
+def get_token_verifier() -> TokenVerifier:
+    return build_verifier(settings)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Fail at startup, not on the first request, if tokens can't be verified.
+    app.dependency_overrides.get(get_token_verifier, get_token_verifier)()
+    yield
+
+
+app = FastAPI(title="feed-fanout", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -88,6 +103,30 @@ SessionDep = Annotated[Session, Depends(get_session)]
 UnitOfWorkDep = Annotated[UnitOfWorkFactory, Depends(get_unit_of_work)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
 
+_bearer = HTTPBearer(auto_error=False, description="An access token from the identity provider")
+
+
+def current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    verifier: Annotated[TokenVerifier, Depends(get_token_verifier)],
+) -> str:
+    """Who is making the request, from their verified access token. The only source of identity:
+    no user id in bodies or paths, so nobody can even ask to act as someone else."""
+    if credentials is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "missing bearer token", headers={"WWW-Authenticate": "Bearer"}
+        )
+    try:
+        return verifier.user_id(credentials.credentials)
+    except InvalidToken as e:
+        log.info("rejected access token", reason=str(e))  # the reason stays in our logs, not the response
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "invalid token", headers={"WWW-Authenticate": 'Bearer error="invalid_token"'}
+        ) from None
+
+
+CurrentUser = Annotated[str, Depends(current_user)]
+
 
 @app.exception_handler(Rejected)
 def rejected(request: Request, e: Rejected) -> JSONResponse:
@@ -98,11 +137,8 @@ def rejected(request: Request, e: Rejected) -> JSONResponse:
 
 # --- Schemas: the HTTP representation. Limits come from the domain, so they can't drift. ---
 
-UserId = Annotated[str, Field(min_length=1, max_length=MAX_USER_ID_LENGTH)]
-
 
 class CreatePostBody(BaseModel):
-    author_id: UserId
     text: str = Field(min_length=1, max_length=MAX_POST_LENGTH)
 
 
@@ -148,8 +184,9 @@ def ready(session: SessionDep) -> JSONResponse:
 
 
 @app.post("/posts", status_code=status.HTTP_201_CREATED)
-def create_post(body: CreatePostBody, unit_of_work: UnitOfWorkDep, clock: ClockDep) -> PostOut:
-    post = CreatePost(unit_of_work, clock)(body.author_id, body.text)
+def create_post(body: CreatePostBody, user: CurrentUser, unit_of_work: UnitOfWorkDep, clock: ClockDep) -> PostOut:
+    """Post as the signed-in user."""
+    post = CreatePost(unit_of_work, clock)(user, body.text)
     log.info("post created", post_id=str(post.id), author_id=post.author_id)
     return PostOut.model_validate(post)
 
@@ -157,16 +194,16 @@ def create_post(body: CreatePostBody, unit_of_work: UnitOfWorkDep, clock: ClockD
 # --- Follows ----------------------------------------------------------------
 
 
-@app.put("/users/{user_id}/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
-def follow(user_id: str, followee_id: str, unit_of_work: UnitOfWorkDep) -> Response:
+@app.put("/me/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
+def follow(followee_id: str, user_id: CurrentUser, unit_of_work: UnitOfWorkDep) -> Response:
     """Idempotent: following someone you already follow is a no-op."""
     Follow(unit_of_work)(user_id, followee_id)
     log.info("followed", follower_id=user_id, followee_id=followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@app.delete("/users/{user_id}/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
-def unfollow(user_id: str, followee_id: str, unit_of_work: UnitOfWorkDep) -> Response:
+@app.delete("/me/following/{followee_id}", status_code=status.HTTP_204_NO_CONTENT)
+def unfollow(followee_id: str, user_id: CurrentUser, unit_of_work: UnitOfWorkDep) -> Response:
     Unfollow(unit_of_work)(user_id, followee_id)
     log.info("unfollowed", follower_id=user_id, followee_id=followee_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -175,13 +212,14 @@ def unfollow(user_id: str, followee_id: str, unit_of_work: UnitOfWorkDep) -> Res
 # --- Feed -------------------------------------------------------------------
 
 
-@app.get("/users/{user_id}/feed")
+@app.get("/me/feed")
 def get_feed(
-    user_id: str,
+    user_id: CurrentUser,
     unit_of_work: UnitOfWorkDep,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
 ) -> FeedPageOut:
-    """Newest first. Keyset pagination: stable even while new posts arrive, unlike OFFSET."""
+    """The signed-in user's feed (feeds are private). Newest first; keyset pagination is
+    stable even while new posts arrive, unlike OFFSET."""
     page = ReadFeed(unit_of_work)(user_id, limit, cursor)
     return FeedPageOut(items=[PostOut.model_validate(p) for p in page.posts], next_cursor=page.next_cursor)

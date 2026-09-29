@@ -8,12 +8,13 @@ from feed_fanout.adapters.http import app, get_unit_of_work
 from feed_fanout.adapters.kafka.events import PostCreated
 from feed_fanout.adapters.postgres.models import OutboxEvent, Post
 from feed_fanout.adapters.postgres.repositories import PostgresUnitOfWork
+from tests.auth_keys import auth_header
 
 
 def test_create_post_writes_event_to_outbox(
     client: TestClient, session_factory: sessionmaker[Session], topic: str
 ) -> None:
-    post = client.post("/posts", json={"author_id": "alice", "text": "hello"}).json()
+    post = client.post("/posts", json={"text": "hello"}, headers=auth_header("alice")).json()
 
     with session_factory() as session:
         [row] = session.scalars(select(OutboxEvent)).all()
@@ -30,7 +31,7 @@ def test_post_and_event_are_saved_atomically(client: TestClient, session_factory
 
     # When a post is created, the request fails...
     with pytest.raises(DBAPIError):
-        client.post("/posts", json={"author_id": "alice", "text": "hello"})
+        client.post("/posts", json={"text": "hello"}, headers=auth_header("alice"))
 
     # ...and the post was rolled back with it: never a post without its event.
     with session_factory() as session:

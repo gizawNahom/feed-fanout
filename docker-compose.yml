@@ -8,14 +8,16 @@
 name: feed-fanout
 
 # Shared by the app services: one image, different commands.
+x-app-env: &app-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092   # the DOCKER listener
+  DATABASE_URL: postgresql+psycopg://feed:feed@postgres:5432/feed
+  LOG_FORMAT: json
+
 x-app: &app
   build: .
   image: feed-fanout:local
   restart: unless-stopped
-  environment:
-    KAFKA_BOOTSTRAP_SERVERS: kafka:29092   # the DOCKER listener
-    DATABASE_URL: postgresql+psycopg://feed:feed@postgres:5432/feed
-    LOG_FORMAT: json
+  environment: *app-env
 
 services:
   kafka:
@@ -121,6 +123,15 @@ services:
         create post-created.dlt 1
     restart: "no"
 
+  # Local development only: makes a key pair (once) that stands in for an identity provider's.
+  # The API mounts the public key read-only. Tokens: make token AS=alice
+  dev-keys:
+    <<: *app
+    command: ["python", "-m", "feed_fanout.devtools", "keys", "--dir", "/keys"]
+    restart: "no"
+    volumes:
+      - dev-keys:/keys
+
   # Applies database migrations, then exits.
   migrate:
     <<: *app
@@ -138,8 +149,18 @@ services:
     command: ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
+    environment:
+      <<: *app-env
+      # Local development: trust tokens signed with the dev key (make token AS=alice).
+      # Production instead sets AUTH_JWKS_URL (+ AUTH_ISSUER, AUTH_AUDIENCE) from its provider.
+      ENVIRONMENT: dev
+      AUTH_DEV_PUBLIC_KEY_FILE: /keys/public.pem
+    volumes:
+      - dev-keys:/keys:ro
     depends_on:
       migrate:
+        condition: service_completed_successfully
+      dev-keys:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
@@ -266,6 +287,7 @@ services:
       retries: 6
 
 volumes:
+  dev-keys:
   kafka-data:
   postgres-data:
   prometheus-data:

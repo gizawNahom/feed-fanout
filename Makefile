@@ -2,7 +2,7 @@
 
 CLUSTER := docker compose -f docker-compose.yml -f docker-compose.cluster.yml
 
-.PHONY: up up-cluster up-observability down reset logs smoke failover test test-fast mutation lint rules help
+.PHONY: up up-cluster up-observability down reset token logs smoke failover test test-fast mutation lint rules help
 
 up:          ## Whole stack, single Kafka broker
 	docker compose up -d --build --wait
@@ -18,6 +18,9 @@ down:        ## Stop the stack (single broker or cluster, with or without observ
 
 reset:       ## Stop the stack and delete its data
 	$(CLUSTER) --profile observability down --volumes --remove-orphans
+
+token:       ## Print a dev access token: make token AS=alice
+	@docker compose run --rm --no-deps -T dev-keys python -m feed_fanout.devtools token $(AS)
 
 logs:        ## Follow the app's logs
 	docker compose logs -f api relay worker

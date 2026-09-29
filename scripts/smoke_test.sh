@@ -26,16 +26,21 @@ run=$(date +%s)
 author="smoke-author-$run"
 reader="smoke-reader-$run"
 
+# Access tokens from the dev stand-in for an identity provider (see feed_fanout/devtools.py).
+token() { docker compose run --rm --no-deps -T dev-keys python -m feed_fanout.devtools token "$1" 2>/dev/null; }
+author_auth="Authorization: Bearer $(token "$author")"
+reader_auth="Authorization: Bearer $(token "$reader")"
+
 echo "--- $reader follows $author, $author posts"
-curl -fsS -X PUT "$API/users/$reader/following/$author"
-post_id=$(curl -fsS -X POST "$API/posts" -H 'content-type: application/json' \
-    -d "{\"author_id\": \"$author\", \"text\": \"smoke test $run\"}" \
+curl -fsS -X PUT "$API/me/following/$author" -H "$reader_auth"
+post_id=$(curl -fsS -X POST "$API/posts" -H 'content-type: application/json' -H "$author_auth" \
+    -d "{\"text\": \"smoke test $run\"}" \
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
 echo "post_id=$post_id"
 
 echo "--- waiting for fanout (API -> outbox -> relay -> Kafka -> worker -> feed)"
 for _ in $(seq 1 60); do
-    if curl -fsS "$API/users/$reader/feed" | grep -q "$post_id"; then
+    if curl -fsS "$API/me/feed" -H "$reader_auth" | grep -q "$post_id"; then
         echo "PASS: the post reached $reader's feed"
         exit 0
     fi

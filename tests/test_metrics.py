@@ -14,6 +14,7 @@ from feed_fanout.adapters.kafka.relay import OutboxCollector, OutboxRelay
 from feed_fanout.adapters.kafka.worker import Outcome
 from feed_fanout.adapters.postgres.models import OutboxEvent
 from feed_fanout.health import Health, HealthServer
+from tests.auth_keys import auth_header
 from tests.conftest import Worker
 from tests.helpers import create_post, follow
 from tests.test_fanout import DB_DOWN, failing_n_times, produce_raw
@@ -33,14 +34,24 @@ def delta(name: str, **labels: str) -> Callable[[], float]:
 
 
 def test_requests_are_labelled_by_route_template_not_raw_path(client: TestClient) -> None:
-    feed_reads = delta("feed_fanout_http_requests_total", method="GET", route="/users/{user_id}/feed", status="200")
+    route = "/me/following/{followee_id}"
+    unfollows = delta("feed_fanout_http_requests_total", method="DELETE", route=route, status="204")
 
-    client.get("/users/bob/feed")
-    client.get("/users/carol/feed")
+    for followee in ("bob", "carol"):
+        client.delete(f"/me/following/{followee}", headers=auth_header("alice"))
 
-    assert feed_reads() == 2  # one series for all users...
+    assert unfollows() == 2  # one series for all followees...
     exposition = client.get("/metrics").text
-    assert "/users/bob/feed" not in exposition  # ...never one per user
+    assert "/me/following/bob" not in exposition  # ...never one per user
+
+
+def test_feed_reads_are_counted(client: TestClient) -> None:
+    feed_reads = delta("feed_fanout_http_requests_total", method="GET", route="/me/feed", status="200")
+
+    client.get("/me/feed", headers=auth_header("bob"))
+    client.get("/me/feed", headers=auth_header("carol"))
+
+    assert feed_reads() == 2
 
 
 def test_request_latency_is_recorded(client: TestClient) -> None:

@@ -23,7 +23,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.14.7-slim-trixie
 
 # Run as an unprivileged user, never root.
-RUN useradd --system --uid 10001 --no-create-home app
+RUN useradd --system --uid 10001 --no-create-home app \
+    && install -d -o app /keys   # dev keys (local development only); owned by the app user
 
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv

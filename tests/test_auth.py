@@ -11,11 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 
 from feed_fanout.adapters.auth import AuthConfigError, InvalidToken, JwksKeys, StaticKey, TokenVerifier, build_verifier
 from feed_fanout.config import Settings
-from tests.auth_keys import AUDIENCE, ISSUER, PUBLIC_KEY, new_key_pair, token_for
+from tests.auth_keys import AUDIENCE, ISSUER, PUBLIC_KEY, auth_header, new_key_pair, token_for
 
 VERIFIER = TokenVerifier(StaticKey(PUBLIC_KEY), issuer=ISSUER, audience=AUDIENCE)
 
@@ -191,3 +192,55 @@ def test_jwks_takes_precedence_even_in_dev(jwks: JwksServer) -> None:
     settings = Settings(environment="dev", auth_jwks_url=jwks.url, auth_issuer=ISSUER, auth_audience=AUDIENCE)
 
     assert isinstance(build_verifier(settings).keys, JwksKeys)
+
+
+# --- The HTTP API -------------------------------------------------------------------
+
+PROTECTED = [
+    ("POST", "/posts"),
+    ("PUT", "/me/following/alice"),
+    ("DELETE", "/me/following/alice"),
+    ("GET", "/me/feed"),
+]
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED)
+def test_every_user_action_needs_a_token(client: Any, method: str, path: str) -> None:
+    response = client.request(method, path, json={"text": "hi"})
+
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+
+
+@pytest.mark.parametrize(("method", "path"), PROTECTED)
+def test_an_invalid_token_is_refused_without_saying_why(client: Any, method: str, path: str) -> None:
+    expired = token_for("alice", exp=int(time.time()) - 3600)
+
+    response = client.request(method, path, json={"text": "hi"}, headers={"Authorization": f"Bearer {expired}"})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid token"}  # the reason goes to our logs, not the caller
+
+
+def test_the_author_is_whoever_the_token_says(client: Any) -> None:
+    response = client.post("/posts", json={"text": "hi", "author_id": "mallory"}, headers=auth_header("alice"))
+
+    assert response.status_code == 201
+    assert response.json()["author_id"] == "alice"  # an author_id in the body is simply ignored
+
+
+@pytest.mark.parametrize("path", ["/health/live", "/health/ready", "/metrics"])
+def test_probes_and_metrics_need_no_token(client: Any, path: str) -> None:
+    assert client.get(path).status_code == 200
+
+
+def test_the_api_refuses_to_start_without_a_way_to_verify_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    import feed_fanout.adapters.http as http
+
+    monkeypatch.setattr(http, "settings", Settings(environment="production"))  # no JWKS URL configured
+    http.get_token_verifier.cache_clear()
+    try:
+        with pytest.raises(AuthConfigError), TestClient(http.app):
+            pass
+    finally:
+        http.get_token_verifier.cache_clear()

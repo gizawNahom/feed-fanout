@@ -56,17 +56,18 @@ wait_until() {
 
 reader="failover-reader"
 author="failover-author"
+token() { "${C[@]}" run --rm --no-deps -T dev-keys python -m feed_fanout.devtools token "$1" 2>/dev/null; }
 posted=()
 
 post() {
     local id
-    id=$(curl -fsS -X POST "$API/posts" -H 'content-type: application/json' \
-        -d "{\"author_id\": \"$author\", \"text\": \"$1\"}" \
+    id=$(curl -fsS -X POST "$API/posts" -H 'content-type: application/json' -H "$author_auth" \
+        -d "{\"text\": \"$1\"}" \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["id"])')
     posted+=("$id")
     echo "  posted $id ($1)"
 }
-feed() { curl -fsS "$API/users/$reader/feed?limit=100"; }
+feed() { curl -fsS "$API/me/feed?limit=100" -H "$reader_auth"; }
 all_in_feed() { local f; f=$(feed); for id in "${posted[@]}"; do grep -q "$id" <<<"$f" || return 1; done; }
 outbox_size() { "${C[@]}" exec -T postgres psql -U feed -d feed -tAc "SELECT count(*) FROM outbox"; }
 outbox_empty() { [[ "$(outbox_size)" == "0" ]]; }
@@ -82,7 +83,9 @@ grep -q "min.insync.replicas=2" <<<"$describe"
 echo "  ok"
 
 step "baseline: $reader follows $author; a post reaches the feed"
-curl -fsS -X PUT "$API/users/$reader/following/$author"
+author_auth="Authorization: Bearer $(token "$author")"
+reader_auth="Authorization: Bearer $(token "$reader")"
+curl -fsS -X PUT "$API/me/following/$author" -H "$reader_auth"
 post "all brokers up"
 wait_until 60 "baseline post in feed" all_in_feed
 echo "  ok"
