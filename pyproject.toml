@@ -17,6 +17,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx2>=2.13.1",
+    "mutmut>=3.8.0",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "ruff>=0.16.9",
@@ -54,3 +55,11 @@ exclude = ["migrations/"]
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+[tool.mutmut]
+# Mutation testing on the core only (pure rules and use cases), driven by the fast tests:
+# the memory-assembly scenarios and the fake side of the repository contract tests.
+source_paths = ["feed_fanout/"]
+only_mutate = ["feed_fanout/domain/*", "feed_fanout/application/*"]
+pytest_add_cli_args_test_selection = ["tests/acceptance", "tests/contracts", "tests/unit", "-k", "memory or unit"]
+also_copy = ["tests/"]

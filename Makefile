@@ -2,7 +2,7 @@
 
 CLUSTER := docker compose -f docker-compose.yml -f docker-compose.cluster.yml
 
-.PHONY: up up-cluster up-observability down reset logs smoke failover test test-fast lint rules help
+.PHONY: up up-cluster up-observability down reset logs smoke failover test test-fast mutation lint rules help
 
 up:          ## Whole stack, single Kafka broker
 	docker compose up -d --build --wait
@@ -33,6 +33,9 @@ test:        ## All tests (needs Docker)
 
 test-fast:   ## Acceptance scenarios on the in-memory assembly: milliseconds, no Docker
 	uv run pytest tests/acceptance -k memory -q
+
+mutation:    ## Mutation testing on domain/ + application/ (fails below the floor)
+	uv run python scripts/mutation_check.py
 
 lint:        ## Lint, formatting and types
 	uv run ruff check . && uv run ruff format --check . && uv run mypy feed_fanout tests

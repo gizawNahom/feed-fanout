@@ -45,6 +45,21 @@ jobs:
           docker run --rm -v "$PWD/observability/alloy:/cfg:ro" grafana/alloy:v1.20.1 \
             validate /cfg/config.alloy
 
+  mutation:
+    name: Mutation testing (core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --locked
+      # Mutates domain/ + application/ and runs the fast tests (no Docker) against each change.
+      - name: Mutation score
+        run: uv run python scripts/mutation_check.py
+
   test:
     name: Tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest

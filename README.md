@@ -106,6 +106,26 @@ uv run python -m feed_fanout.adapters.kafka.relay
 uv run python -m feed_fanout.adapters.kafka.worker
 ```
 
+## Architecture
+
+Hexagonal (ports and adapters), kept light: plain Python `Protocol`s and constructors, no framework.
+
+```
+feed_fanout/
+  domain/         the rules, pure: Post creation, follow and page-size rules, feed positions and cursors
+  application/    use cases (CreatePost, Follow, Unfollow, ReadFeed, FanOutPost) and the ports they
+                  need (repositories, Outbox, UnitOfWork, Clock), as interfaces
+  adapters/
+    http.py       FastAPI: HTTP in -> use case -> HTTP out; domain rejections become 400/422
+    postgres/     the ports in SQL; the single INSERT ... SELECT fanout lives here
+    kafka/        the fanout worker, the outbox relay, dead letters and replay
+  config, logs, metrics, health, retry, shutdown   shared technical services
+```
+
+- **The use cases know nothing about HTTP, SQL or Kafka.** "Save a post and its event atomically" is an application rule (one `UnitOfWork`); Postgres supplies the transaction.
+- **The efficient parts stay efficient:** the fanout is still one `INSERT ... SELECT` that never loads followers into Python. It's simply the Postgres adapter's implementation of `FeedRepository.add_to_followers`.
+- **Why it matters here:** the same behavior tests run on in-memory adapters in microseconds and on the real stack in seconds (see [Tests](#tests)).
+
 ## API
 
 | Method | Path | Description |
@@ -208,13 +228,34 @@ CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push 
 
 ## Tests
 
-```bash
-uv run pytest
+Written so each behavior is tested **once**, then proven at every level (the idea: [subsecond TDD](https://github.com/subsecondtdd/todo-subsecond)):
+
+```
+          ┌──────────────────────────────────────────────────────┐
+  slow    │ infrastructure & fault tests                         │  commits, SIGTERM, rebalancing, dead letters,
+          │                                                      │  outbox, logs, metrics, health (+ compose e2e, failover)
+          ├──────────────────────────────────────────────────────┤
+          │ acceptance scenarios              [full]             │  the real stack: HTTP, Postgres, Kafka
+          │ FeedRepository contract tests     [postgres]         │
+          ├──────────────────────────────────────────────────────┤
+          │ acceptance scenarios              [memory]           │  same scenarios, in-memory adapters
+          │ FeedRepository contract tests     [memory]           │  keeps the fake honest
+  fast    │ unit tests                                           │  domain rules at their exact boundaries
+          └──────────────────────────────────────────────────────┘
 ```
 
-Integration tests run against **real Postgres and Kafka** in throwaway containers ([testcontainers](https://testcontainers.com/)), using the same images as `docker-compose.yml`. Your dev containers and data are never touched. Each test gets empty tables and its own Kafka topic. The schema is built by running the real Alembic migrations, so the migrations are tested too. Docker must be running.
+- **Acceptance scenarios** (`tests/acceptance/`) are written against a small contract (`follow`, `unfollow`, `post`, `feed`, `settle`) in the users' language, with no HTTP, SQL or Kafka. Each runs on two **assemblies**: `memory` (the real use cases with in-memory adapters, ~160 µs per scenario, the whole set in ~8 ms) and `full` (the real stack, seconds). Same test, both levels.
+- **Contract tests** (`tests/contracts/`) run the same checks against the Postgres repository and the in-memory fake: ordering, tie-breaking, idempotency, even the unknown-post quirk. The fast tests are only as trustworthy as the fake; these catch drift (dropping the fake's tie-break fails exactly the two `[memory]` tie tests).
+- **Unit tests** (`tests/unit/`) pin the domain rules at their exact boundaries, and the cursor format.
+- **Infrastructure tests** (`tests/test_*.py`) cover what the contract can't see: Kafka commit semantics, dead-letter headers and replay, SKIP LOCKED, SIGTERM against a real subprocess, rebalancing, metrics and logs. Real Postgres and Kafka in throwaway containers ([testcontainers](https://testcontainers.com/)), the schema built by the real migrations; your dev data is never touched.
 
-They cover the behavior that matters: followers receive posts and non-followers don't; replaying an event adds no duplicates; bad events land in the dead-letter topic with their context, and the worker moves on; dead letters can be replayed once fixed, without looping forever; a database outage is retried until it succeeds; SIGTERM exits promptly, commits finished work and leaves the group (tested against a real subprocess); a worker joining mid-stream loses nothing; feeds are newest-first; and pagination returns every post exactly once, even when timestamps tie.
+```bash
+make test-fast    # memory scenarios: milliseconds, no Docker
+make test         # everything (needs Docker)
+make mutation     # mutation testing on the core
+```
+
+**Mutation testing** ([mutmut](https://github.com/boxed/mutmut)) changes `domain/` and `application/` in small ways (`1 <= len` becomes `2 <= len`, a message becomes `None`, ...) and checks the fast tests notice each change: 100 mutants in ~20 s, **100% detected**, enforced in CI. The first run found 18 gaps (untested boundaries, unchecked error messages) and one real performance risk that no behavior test could see: `ReadFeed` fetching the whole feed instead of one page plus one row, which would behave identically but load a user's entire history from Postgres on every request.
 
 ## Observability
 
