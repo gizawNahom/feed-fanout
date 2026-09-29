@@ -2,7 +2,7 @@
 Settings, read from environment variables (or a .env file), with local-development defaults.
 
     KAFKA_BOOTSTRAP_SERVERS   default localhost:9092
-    DATABASE_URL              default postgresql+psycopg://feed:feed@localhost:5432/feed
+    DATABASE_URL              required, except with ENVIRONMENT=dev (then the local database below)
     POST_CREATED_TOPIC        default post-created   (its dead-letter topic is <topic>.dlt)
     FANOUT_GROUP_ID           default fanout-workers
     LOG_LEVEL                 default INFO
@@ -29,12 +29,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from feed_fanout.domain.posting_limit import DEFAULT_POSTING_LIMIT, PostingLimit
 
+DEV_DATABASE_URL = "postgresql+psycopg://feed:feed@localhost:5432/feed"  # docker-compose.yml's Postgres
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     kafka_bootstrap_servers: str = "localhost:9092"
-    database_url: str = "postgresql+psycopg://feed:feed@localhost:5432/feed"
+    database_url: str = ""  # required outside dev: see fill_dev_defaults
     post_created_topic: str = "post-created"
     fanout_group_id: str = "fanout-workers"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -51,6 +53,16 @@ class Settings(BaseSettings):
 
     posts_burst: PositiveInt = DEFAULT_POSTING_LIMIT.burst
     posts_per_minute: PositiveFloat = timedelta(minutes=1) / DEFAULT_POSTING_LIMIT.every
+
+    @model_validator(mode="after")
+    def fill_dev_defaults(self) -> "Settings":
+        # The local database's well-known password must never be what production quietly uses:
+        # a deploy that forgets DATABASE_URL fails at startup instead.
+        if not self.database_url:
+            if self.environment != "dev":
+                raise ValueError("DATABASE_URL is required (a local default is only used with ENVIRONMENT=dev)")
+            self.database_url = DEV_DATABASE_URL
+        return self
 
     @model_validator(mode="after")
     def dev_key_only_in_dev(self) -> "Settings":

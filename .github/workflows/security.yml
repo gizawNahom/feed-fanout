@@ -1,0 +1,61 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly as well: new vulnerabilities are published against code nobody has touched.
+  schedule:
+    - cron: "17 6 * * 1"  # Mondays 06:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.74.0
+
+jobs:
+  dependencies:
+    name: Python dependencies (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.14"
+      # Every locked package (dev tools included), checked against the Python advisory databases.
+      - name: Audit the lock file
+        run: |
+          uv export --frozen --all-groups --no-emit-project -o requirements.txt
+          uvx pip-audit==2.10.1 --disable-pip --require-hashes -r requirements.txt
+
+  image:
+    name: Container image (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: docker build -t feed-fanout:ci .
+      # Fails on HIGH/CRITICAL vulnerabilities that have a fix to upgrade to. Unfixed ones (the
+      # base OS always has some) would keep CI red with nothing to do. Dependabot bumps the base
+      # image when Debian ships fixes. A finding that can't be fixed yet goes in .trivyignore,
+      # with a reason and a date.
+      - name: Vulnerabilities with a fix available
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/src:ro" -w /src \
+            "$TRIVY_IMAGE" image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 feed-fanout:ci
+
+  secrets:
+    name: Committed secrets (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Secret scan
+        run: docker run --rm -v "$PWD:/src:ro" "$TRIVY_IMAGE" fs --scanners secret --exit-code 1 /src

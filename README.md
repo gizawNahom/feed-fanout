@@ -104,10 +104,14 @@ Requires [uv](https://docs.astral.sh/uv/). Start only the infrastructure and set
 
 ```bash
 docker compose up -d kafka postgres kafka-ui adminer kafka-topics migrate
+cp .env.example .env                                         # ENVIRONMENT=dev + local settings
+uv run python -m feed_fanout.devtools keys --dir .dev-keys   # a dev key pair (git-ignored)
 uv run uvicorn feed_fanout.adapters.http:app --reload
 uv run python -m feed_fanout.adapters.kafka.relay
 uv run python -m feed_fanout.adapters.kafka.worker
 ```
+
+Access tokens for this setup: `uv run python -m feed_fanout.devtools token alice --dir .dev-keys`.
 
 ## Architecture
 
@@ -232,12 +236,12 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | Variable | Default |
 |---|---|
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
-| `DATABASE_URL` | `postgresql+psycopg://feed:feed@localhost:5432/feed` |
+| `DATABASE_URL` | **Required**, except with `ENVIRONMENT=dev`: then `postgresql+psycopg://feed:feed@localhost:5432/feed` |
 | `POST_CREATED_TOPIC` | `post-created` (dead letters go to `<topic>.dlt`) |
 | `FANOUT_GROUP_ID` | `fanout-workers` |
 | `LOG_LEVEL` | `INFO` (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `LOG_FORMAT` | `auto`: readable text on a terminal, JSON otherwise (`json`, `text` to force) |
-| `ENVIRONMENT` | `production` (anything but `dev` is treated as production) |
+| `ENVIRONMENT` | `production`. `dev` allows the local database default and the dev signing key; nothing else does |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` | how to verify access tokens (see [Authentication](#authentication)) |
 | `POSTS_BURST`, `POSTS_PER_MINUTE` | `10`, `10`: each user's [posting limit](#posting-limits) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
@@ -255,6 +259,8 @@ uv run mypy feed_fanout tests    # types (strict)
 ```
 
 CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14, plus the end-to-end smoke test against the containerized stack and the broker failover test against the 3-node cluster.
+
+A separate [security workflow](.github/workflows/security.yml) runs on every push and weekly: pip-audit on the locked dependencies, Trivy on the container image and for committed secrets. See [SECURITY.md](SECURITY.md) for what's in place and how to report a vulnerability.
 
 ## Tests
 

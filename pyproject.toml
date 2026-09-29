@@ -43,7 +43,14 @@ select = [
     "UP",       # pyupgrade: modern syntax for the target Python
     "SIM",      # simplifications
     "RUF",      # ruff-specific checks
+    "S",        # security (Bandit's checks): hard-coded secrets, injection, unsafe calls, ...
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and seed random numbers on purpose. Scripts are developer tools that run
+# executables from the dev environment's PATH (uv run).
+"tests/**" = ["S101", "S311"]
+"scripts/**" = ["S607"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -22,9 +22,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- Runtime: just Python, the virtualenv and the code ------------------------------
 FROM python:3.14.7-slim-trixie
 
-# Run as an unprivileged user, never root.
+# Run as an unprivileged user, never root. And no pip: the app runs from its virtualenv and
+# never installs anything, and the base image's pip carries its own vulnerable vendored copies
+# (found by the image scan). Less software, less to patch, less for an attacker to use.
+# /keys: dev keys (local development only), owned by the app user.
 RUN useradd --system --uid 10001 --no-create-home app \
-    && install -d -o app /keys   # dev keys (local development only); owned by the app user
+    && install -d -o app /keys \
+    && python -m pip uninstall --yes --root-user-action=ignore pip
 
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv

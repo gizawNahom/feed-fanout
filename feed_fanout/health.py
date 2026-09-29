@@ -76,7 +76,8 @@ class Heartbeat:
 
 
 class HealthServer:
-    def __init__(self, check: HealthCheck, port: int, host: str = "0.0.0.0") -> None:
+    # All interfaces on purpose: probes come from outside the container (orchestrator, Prometheus).
+    def __init__(self, check: HealthCheck, port: int, host: str = "0.0.0.0") -> None:  # noqa: S104
         self._server = ThreadingHTTPServer((host, port), _handler_for(check))
         self._thread = threading.Thread(target=self._server.serve_forever, name="health", daemon=True)
 

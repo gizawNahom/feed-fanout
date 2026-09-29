@@ -13,14 +13,17 @@ concurrency:
 permissions:
   contents: read
 
+# Third-party actions are pinned to a commit SHA, not a tag: a tag can be moved to point at
+# different code, a SHA can't. Dependabot keeps the SHAs (and the version comments) current.
+
 jobs:
   lint:
     name: Lint and type-check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: "3.14"
           enable-cache: true
@@ -50,8 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: "3.14"
           enable-cache: true
@@ -70,8 +73,8 @@ jobs:
         # Oldest supported (requires-python >= 3.12) and newest.
         python: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
@@ -86,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Builds the image, starts the whole stack, and checks a post reaches a follower's feed.
       - name: Smoke test
         run: KEEP=0 scripts/smoke_test.sh
@@ -96,7 +99,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Kills 1, then 2 of 3 brokers while posting, and checks that no post is lost.
       - name: Failover test
         run: scripts/failover_test.sh
