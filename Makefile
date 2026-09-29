@@ -2,7 +2,7 @@
 
 CLUSTER := docker compose -f docker-compose.yml -f docker-compose.cluster.yml
 
-.PHONY: up up-cluster up-observability down reset logs smoke failover test lint rules help
+.PHONY: up up-cluster up-observability down reset logs smoke failover test test-fast lint rules help
 
 up:          ## Whole stack, single Kafka broker
 	docker compose up -d --build --wait
@@ -28,8 +28,11 @@ smoke:       ## End-to-end check: post -> follower's feed
 failover:    ## Kill brokers in a 3-broker cluster and check nothing is lost (isolated stack)
 	scripts/failover_test.sh
 
-test:        ## Unit and integration tests
+test:        ## All tests (needs Docker)
 	uv run pytest
+
+test-fast:   ## Acceptance scenarios on the in-memory assembly: milliseconds, no Docker
+	uv run pytest tests/acceptance -k memory -q
 
 lint:        ## Lint, formatting and types
 	uv run ruff check . && uv run ruff format --check . && uv run mypy feed_fanout tests
