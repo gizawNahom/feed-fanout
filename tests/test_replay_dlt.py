@@ -37,7 +37,7 @@ def dead_letter_unknown_post(worker: Worker, kafka_bootstrap: str, topic: str) -
     Only detected when the author has followers: with nobody to fan out to, no feed row is
     inserted, so the foreign key is never checked (and there's nothing to do anyway).
     """
-    with worker.fanout.session_factory.begin() as session:
+    with worker.relay.session_factory.begin() as session:
         session.execute(insert(Follow).values(follower_id="bob", followee_id="alice").on_conflict_do_nothing())
     event = PostCreated(post_id=uuid.uuid4(), author_id="alice", created_at=datetime.now(UTC))
     produce_raw(kafka_bootstrap, topic, key="alice", value=event.model_dump_json().encode())

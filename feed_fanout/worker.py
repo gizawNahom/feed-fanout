@@ -19,26 +19,22 @@ import time
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message, TopicPartition
 from pydantic import ValidationError
-from sqlalchemy import literal, select
-from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, sessionmaker
 from structlog.contextvars import bound_contextvars
 
 from feed_fanout import metrics
+from feed_fanout.adapters.postgres import PostgresUnitOfWork
+from feed_fanout.application.ports import UnknownPost
+from feed_fanout.application.use_cases import FanOutPost
 from feed_fanout.config import settings
 from feed_fanout.db import SessionLocal
 from feed_fanout.events import PostCreated
 from feed_fanout.health import Health, Heartbeat, start_health_server
 from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.logs import configure_logging, get_logger
-from feed_fanout.models import FeedItem, Follow
 from feed_fanout.retry import DEFAULT_RETRY, RetryPolicy, is_transient
 from feed_fanout.shutdown import install_signal_handlers
 
 log = get_logger("feed_fanout.worker")
-
-FOREIGN_KEY_VIOLATION = "23503"
 
 
 class Outcome(enum.Enum):
@@ -55,30 +51,7 @@ class PermanentError(Exception):
         self.reason = reason
 
 
-def fan_out(session_factory: sessionmaker[Session], event: PostCreated) -> int:
-    """Insert the post into each follower's feed. Returns the number of new feed rows.
-
-    One INSERT ... SELECT: Postgres reads the followers and writes the feed rows itself,
-    so nothing is loaded into Python. ON CONFLICT DO NOTHING makes it idempotent:
-    re-processing the same event (at-least-once delivery) adds nothing.
-    """
-    followers = select(
-        Follow.follower_id,
-        literal(event.post_id),
-        literal(event.created_at),
-    ).where(Follow.followee_id == event.author_id)
-
-    stmt = (
-        insert(FeedItem)
-        .from_select(["user_id", "post_id", "created_at"], followers)
-        .on_conflict_do_nothing()
-        .returning(FeedItem.user_id)  # rows actually inserted (conflicts return nothing)
-    )
-    with session_factory.begin() as session:  # commits on success, rolls back on error
-        return len(session.execute(stmt).all())
-
-
-def handle(value: bytes | None, session_factory: sessionmaker[Session]) -> int:
+def handle(value: bytes | None, fan_out_post: FanOutPost) -> int:
     """Process one event's payload. Returns feed rows added; raises PermanentError if it never can."""
     try:
         event = PostCreated.model_validate_json(value or b"")
@@ -86,11 +59,9 @@ def handle(value: bytes | None, session_factory: sessionmaker[Session]) -> int:
         raise PermanentError("malformed", str(e)) from e
     try:
         with metrics.FANOUT_DURATION.time():
-            added = fan_out(session_factory, event)
-    except IntegrityError as e:
-        if getattr(e.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
-            raise PermanentError("unknown_post", f"post {event.post_id} does not exist") from e
-        raise
+            added = fan_out_post(event.post_id, event.author_id, event.created_at)
+    except UnknownPost as e:
+        raise PermanentError("unknown_post", str(e)) from e
     metrics.FEED_ROWS.observe(added)
     # What users experience: from the post's creation until it's in the feeds. (An event
     # replayed from the dead-letter topic counts from its original creation time, too.)
@@ -125,12 +96,12 @@ class FanoutWorker:
     def __init__(
         self,
         consumer: Consumer,
-        session_factory: sessionmaker[Session],
+        fan_out_post: FanOutPost,
         dead_letters: DeadLetterPublisher,
         retry: RetryPolicy = DEFAULT_RETRY,
     ) -> None:
         self.consumer = consumer
-        self.session_factory = session_factory
+        self.fan_out_post = fan_out_post
         self.dead_letters = dead_letters
         self.retry = retry
         self.heartbeat = Heartbeat()
@@ -166,7 +137,7 @@ class FanoutWorker:
         while True:
             attempt += 1
             try:
-                handle(msg.value(), self.session_factory)
+                handle(msg.value(), self.fan_out_post)
                 outcome = Outcome.FANNED_OUT
                 self.heartbeat.success()
                 break
@@ -297,7 +268,7 @@ def main() -> None:
     log.info("starting", group=settings.fanout_group_id, dead_letter_topic=settings.post_created_dlt_topic)
     worker = FanoutWorker(
         make_consumer(settings.kafka_bootstrap_servers, settings.fanout_group_id),
-        SessionLocal,
+        FanOutPost(lambda: PostgresUnitOfWork(SessionLocal, settings.post_created_topic)),
         DeadLetterPublisher(settings.kafka_bootstrap_servers, settings.post_created_dlt_topic),
     )
     install_signal_handlers(worker.stop)

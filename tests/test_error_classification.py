@@ -1,5 +1,7 @@
 """Which database errors are retried forever (transient) vs. dead-lettered after a few tries."""
 
+from typing import Any
+
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
@@ -7,7 +9,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-import feed_fanout.worker
+from feed_fanout.application.use_cases import FanOutPost
 from feed_fanout.kafka import headers_of
 from feed_fanout.retry import is_transient
 from feed_fanout.worker import Outcome
@@ -64,11 +66,11 @@ def test_statement_timeout_during_fanout_is_dead_lettered(
     timeout = raised_by(engine, "SET statement_timeout = 10; SELECT pg_sleep(1)")
     calls: list[int] = []
 
-    def always_times_out(*args, **kwargs):
+    def always_times_out(self: FanOutPost, *args: Any, **kwargs: Any) -> int:
         calls.append(1)
         raise timeout
 
-    monkeypatch.setattr(feed_fanout.worker, "fan_out", always_times_out)
+    monkeypatch.setattr(FanOutPost, "__call__", always_times_out)
     follow(client, "bob", "alice")
     create_post(client, "alice")
 

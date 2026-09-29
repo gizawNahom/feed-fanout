@@ -18,7 +18,7 @@ from feed_fanout.health import Health, HealthServer, Heartbeat, start_health_ser
 from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.relay import OutboxRelay
 from feed_fanout.worker import FanoutWorker, make_consumer
-from tests.conftest import FAST_RETRY
+from tests.conftest import FAST_RETRY, postgres_fan_out
 
 
 def get(port: int, path: str) -> tuple[int, dict[str, Any]]:
@@ -159,7 +159,7 @@ def test_worker_ready_while_consuming_and_not_after_stop(
 ) -> None:
     worker = FanoutWorker(
         make_consumer(kafka_bootstrap, "test-health"),
-        session_factory,
+        postgres_fan_out(session_factory),
         DeadLetterPublisher(kafka_bootstrap, dlt_topic),
         FAST_RETRY,
     )

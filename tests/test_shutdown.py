@@ -24,7 +24,7 @@ from feed_fanout.kafka import DeadLetterPublisher
 from feed_fanout.models import FeedItem
 from feed_fanout.relay import OutboxRelay
 from feed_fanout.worker import FanoutWorker, Outcome, make_consumer
-from tests.conftest import FAST_RETRY
+from tests.conftest import FAST_RETRY, postgres_fan_out
 from tests.helpers import create_post, follow
 
 
@@ -267,7 +267,7 @@ def test_worker_joining_mid_stream_loses_nothing(
     def start_worker() -> tuple[FanoutWorker, threading.Thread]:
         w = FanoutWorker(
             make_consumer(kafka_bootstrap, group_id),
-            session_factory,
+            postgres_fan_out(session_factory),
             DeadLetterPublisher(kafka_bootstrap, dlt_topic),
             FAST_RETRY,
         )

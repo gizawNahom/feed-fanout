@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from confluent_kafka import Message, Producer, TopicPartition
@@ -10,12 +11,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-import feed_fanout.worker
+from feed_fanout.application.use_cases import FanOutPost
 from feed_fanout.events import PostCreated
 from feed_fanout.kafka import close_producer, headers_of
 from feed_fanout.models import FeedItem
 from feed_fanout.worker import Outcome, PermanentError, handle
-from tests.conftest import TopicReader, Worker
+from tests.conftest import TopicReader, Worker, postgres_fan_out
 from tests.helpers import create_post, feed_ids, follow
 
 
@@ -50,7 +51,7 @@ def test_reprocessing_same_event_adds_no_duplicates(
 
     # When the same event is delivered again (at-least-once)
     event = PostCreated(post_id=post["id"], author_id="alice", created_at=post["created_at"])
-    added = handle(event.model_dump_json().encode(), session_factory)
+    added = handle(event.model_dump_json().encode(), postgres_fan_out(session_factory))
 
     # Then nothing changes
     assert added == 0
@@ -64,7 +65,7 @@ def test_reprocessing_same_event_adds_no_duplicates(
 @pytest.mark.parametrize("value", [b"not json", b'{"post_id": "p1", "author": "alice"}', b"", None])
 def test_malformed_payload_is_a_permanent_error(value: bytes | None, session_factory: sessionmaker[Session]) -> None:
     with pytest.raises(PermanentError) as e:
-        handle(value, session_factory)
+        handle(value, postgres_fan_out(session_factory))
     assert e.value.reason == "malformed"
 
 
@@ -139,17 +140,17 @@ def test_worker_keeps_going_after_a_dead_lettered_event(
 
 
 def failing_n_times(n: int, error: Exception, monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Make fan_out raise `error` for its first n calls, then behave normally."""
+    """Make the fanout use case raise `error` for its first n calls, then behave normally."""
     calls: list[int] = []
-    real = feed_fanout.worker.fan_out
+    real = FanOutPost.__call__
 
-    def flaky(*args, **kwargs):
+    def flaky(self: FanOutPost, *args: Any, **kwargs: Any) -> int:
         calls.append(1)
         if len(calls) <= n:
             raise error
-        return real(*args, **kwargs)
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(feed_fanout.worker, "fan_out", flaky)
+    monkeypatch.setattr(FanOutPost, "__call__", flaky)
     return calls
 
 

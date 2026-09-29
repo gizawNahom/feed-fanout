@@ -24,6 +24,7 @@ from testcontainers.core.container import DockerContainer
 
 from feed_fanout.adapters.postgres import PostgresUnitOfWork
 from feed_fanout.api import app, get_session, get_unit_of_work
+from feed_fanout.application.use_cases import FanOutPost
 from feed_fanout.kafka import DeadLetterPublisher, make_producer
 from feed_fanout.relay import OutboxRelay
 from feed_fanout.retry import RetryPolicy
@@ -206,6 +207,11 @@ def client(session_factory: sessionmaker[Session], topic: str) -> Iterator[TestC
     app.dependency_overrides.clear()
 
 
+def postgres_fan_out(session_factory: sessionmaker[Session]) -> FanOutPost:
+    """The fanout use case on the test database. (Fanout writes no outbox events: topic unused.)"""
+    return FanOutPost(lambda: PostgresUnitOfWork(session_factory, post_created_topic="unused"))
+
+
 # Fast backoff so retry tests take milliseconds, not seconds.
 FAST_RETRY = RetryPolicy(base_delay=0.01, max_delay=0.05, max_unexpected_attempts=3)
 
@@ -237,5 +243,5 @@ def worker(
 ) -> Iterator[Worker]:
     consumer = make_consumer(kafka_bootstrap, group_id=f"test-{uuid.uuid4().hex[:8]}")
     consumer.subscribe([topic])
-    yield Worker(FanoutWorker(consumer, session_factory, dead_letters, FAST_RETRY), relay)
+    yield Worker(FanoutWorker(consumer, postgres_fan_out(session_factory), dead_letters, FAST_RETRY), relay)
     consumer.close()
