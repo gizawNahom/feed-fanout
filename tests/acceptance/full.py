@@ -1,4 +1,15 @@
-"""The full assembly: the real stack. HTTP API, Postgres, outbox, relay, Kafka and worker."""
+"""
+The full assembly: the real stack, stepped by the test.
+
+Every I/O path is real: HTTP API, Postgres, outbox, Kafka, the relay's publish, the
+worker's fanout and offset commit. What the test replaces is the scheduling: instead of
+the relay and worker loops running concurrently in their own processes, settle() calls
+the same production methods (OutboxRelay.publish_batch, FanoutWorker.process) itself, one
+step at a time. That makes every scenario deterministic, with no waiting and no timeouts.
+
+The real loops and their concurrency are covered elsewhere: the compose smoke test,
+the shutdown/rebalance tests and the broker failover test.
+"""
 
 from typing import Any
 
@@ -44,7 +55,8 @@ class FullSystem:
         )
 
     def settle(self) -> None:
-        """Deterministic, no sleeps: publish every outbox event, then process exactly that many."""
+        """Step the pipeline to completion: publish every outbox event, then process exactly
+        that many from Kafka. Deterministic: no sleeps, nothing to time out."""
         pending = self._outbox_size()
         while self._outbox_size():
             self.relay.publish_batch()
