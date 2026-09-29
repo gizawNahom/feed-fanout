@@ -24,3 +24,7 @@ Only the latest commit on `main`. This is a reference implementation, not a host
 - **Dependencies** are locked (`uv.lock`), and Dependabot proposes updates weekly for Python
   packages, GitHub Actions and container images. Actions are pinned to commit SHAs.
 - **The image** runs as an unprivileged user and carries no package installer.
+- **Injection and XSS:** every query goes through SQLAlchemy with bound parameters (ruff's S608
+  flags SQL built from strings). The API only serves JSON, with `X-Content-Type-Options: nosniff`;
+  post text is returned exactly as written, and escaping it is the rendering client's job.
+  Tokens travel in the `Authorization` header, not cookies, so there's no CSRF.

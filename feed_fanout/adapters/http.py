@@ -78,6 +78,15 @@ async def record_metrics(request: Request, call_next: Callable[[Request], Awaita
         metrics.HTTP_REQUESTS.labels(request.method, template, str(status_code)).inc()
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    """Defense in depth: never let a browser guess that a response (say, a post's text in JSON) is
+    HTML it should render. Every response, errors included."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @app.get("/metrics", include_in_schema=False)
 def prometheus_metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
