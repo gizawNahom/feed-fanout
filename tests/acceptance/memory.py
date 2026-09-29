@@ -3,10 +3,13 @@ The memory assembly: the real domain rules and use cases, with in-memory adapter
 No Docker, no network, no database: each scenario runs in microseconds.
 """
 
+from datetime import timedelta
+
 from feed_fanout.application.use_cases import CreatePost, FanOutPost, Follow, ReadFeed, Unfollow
 from feed_fanout.domain import model
 from feed_fanout.domain.model import DEFAULT_PAGE_SIZE
-from tests.acceptance.contract import FeedPage, Post, Rejected
+from feed_fanout.domain.posting_limit import TooManyPosts as PostingTooFast
+from tests.acceptance.contract import FeedPage, Post, Rejected, TooManyPosts
 from tests.fakes import InMemoryDatabase, TickingClock
 
 
@@ -17,8 +20,9 @@ def _post(p: model.Post) -> Post:
 class MemorySystem:
     def __init__(self) -> None:
         self.db = InMemoryDatabase()
+        self.clock = TickingClock()
         uow = self.db.unit_of_work
-        self._create_post = CreatePost(uow, TickingClock())
+        self._create_post = CreatePost(uow, self.clock)
         self._follow = Follow(uow)
         self._unfollow = Unfollow(uow)
         self._read_feed = ReadFeed(uow)
@@ -41,6 +45,9 @@ class MemorySystem:
             page = self._read_feed(user, limit, cursor)
         return FeedPage(posts=[_post(p) for p in page.posts], next_cursor=page.next_cursor)
 
+    def time_passes(self, seconds: float) -> None:
+        self.clock.advance(timedelta(seconds=seconds))
+
     def settle(self) -> None:
         """What the relay and the worker do, done directly: fan out every recorded event."""
         while self.db.state.outbox:
@@ -49,11 +56,13 @@ class MemorySystem:
 
 
 class _rejections:
-    """Domain rejections become the contract's Rejected, as the HTTP API turns them into 4xx."""
+    """Domain rejections become the contract's, as the HTTP API turns them into 4xx."""
 
     def __enter__(self) -> None:
         pass
 
     def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object) -> None:
+        if isinstance(exc, PostingTooFast):
+            raise TooManyPosts(exc.retry_after_seconds) from exc
         if isinstance(exc, model.Rejected):
             raise Rejected(str(exc)) from exc

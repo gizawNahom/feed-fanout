@@ -54,6 +54,20 @@ class Outbox(Protocol):
         ...
 
 
+class PostingBuckets(Protocol):
+    """Each user's posting token bucket, as the time it's full again (see domain/posting_limit.py)."""
+
+    def full_at(self, user_id: str) -> datetime | None:
+        """When the user's bucket is full again; None if they've never posted.
+
+        Locks the user's bucket until the unit of work ends, so concurrent posts by the same
+        user take turns (across API instances too) and can't spend the same token twice.
+        """
+        ...
+
+    def set_full_at(self, user_id: str, full_at: datetime) -> None: ...
+
+
 class UnitOfWork(Protocol):
     """One atomic change: everything done through it is committed together, or not at all."""
 
@@ -68,6 +82,9 @@ class UnitOfWork(Protocol):
 
     @property
     def outbox(self) -> Outbox: ...
+
+    @property
+    def posting_buckets(self) -> PostingBuckets: ...
 
     def __enter__(self) -> Self: ...
 

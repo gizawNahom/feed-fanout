@@ -11,20 +11,29 @@ from datetime import datetime
 from feed_fanout.application.ports import Clock, UnitOfWork
 from feed_fanout.domain.feed import FeedPage, FeedPosition
 from feed_fanout.domain.model import DEFAULT_PAGE_SIZE, Post, check_can_follow, check_page_size
+from feed_fanout.domain.posting_limit import DEFAULT_POSTING_LIMIT, PostingLimit
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
 
 
 @dataclass(frozen=True)
 class CreatePost:
-    """Save a post and, atomically with it, record that it was created (for fanout)."""
+    """Save a post and, atomically with it, record that it was created (for fanout).
+
+    Refused with TooManyPosts if the author is over their posting limit. An invalid post is
+    refused before that, so it doesn't count.
+    """
 
     unit_of_work: UnitOfWorkFactory
     clock: Clock
+    limit: PostingLimit = DEFAULT_POSTING_LIMIT
 
     def __call__(self, author_id: str, text: str) -> Post:
-        post = Post.create(author_id, text, now=self.clock.now())
+        now = self.clock.now()
+        post = Post.create(author_id, text, now=now)
         with self.unit_of_work() as uow:
+            buckets = uow.posting_buckets
+            buckets.set_full_at(author_id, self.limit.take(buckets.full_at(author_id), now))
             uow.posts.add(post)
             uow.outbox.post_created(post)
             uow.commit()

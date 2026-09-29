@@ -72,3 +72,16 @@ class OutboxEvent(Base):
     key: Mapped[str | None] = mapped_column(String(255))
     payload: Mapped[str] = mapped_column(Text)  # serialized event (JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PostingBucket(Base):
+    """A user's posting token bucket: the time it's full again (see domain/posting_limit.py).
+
+    One small row per user who has posted. A row whose full_at has passed means the same as no
+    row (a full bucket), so old rows are harmless and could be purged at any time.
+    """
+
+    __tablename__ = "posting_buckets"
+
+    user_id: Mapped[str] = mapped_column(USER_ID, primary_key=True)
+    full_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # NULL: never posted

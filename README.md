@@ -115,11 +115,12 @@ Hexagonal (ports and adapters), kept light: plain Python `Protocol`s and constru
 
 ```
 feed_fanout/
-  domain/         the rules, pure: Post creation, follow and page-size rules, feed positions and cursors
+  domain/         the rules, pure: Post creation, follow and page-size rules, feed positions and cursors,
+                  the posting limit
   application/    use cases (CreatePost, Follow, Unfollow, ReadFeed, FanOutPost) and the ports they
-                  need (repositories, Outbox, UnitOfWork, Clock), as interfaces
+                  need (repositories, Outbox, PostingBuckets, UnitOfWork, Clock), as interfaces
   adapters/
-    http.py       FastAPI: HTTP in -> use case -> HTTP out; domain rejections become 400/422
+    http.py       FastAPI: HTTP in -> use case -> HTTP out; domain rejections become 400/422/429
     postgres/     the ports in SQL; the single INSERT ... SELECT fanout lives here
     kafka/        the fanout worker, the outbox relay, dead letters and replay
   config, logs, metrics, health, retry, shutdown   shared technical services
@@ -135,7 +136,7 @@ Every call acts as the user in its access token (`Authorization: Bearer …`); t
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/posts` | Post `{text}` as yourself → `201` with the post |
+| `POST` | `/posts` | Post `{text}` as yourself → `201` with the post, or `429` if you're [posting too fast](#posting-limits) |
 | `PUT` | `/me/following/{followee}` | Follow (idempotent) → `204` |
 | `DELETE` | `/me/following/{followee}` | Unfollow → `204` |
 | `GET` | `/me/feed?limit=20&cursor=…` | Your feed (feeds are private), newest first. Pass `next_cursor` from the response to get older posts. |
@@ -151,6 +152,15 @@ The API doesn't manage users or passwords. An **identity provider** (Auth0, Keyc
 - **Identity comes only from the token.** With no user id in any body or path, "acting as someone else" can't even be expressed: no per-route permission check to forget.
 - **Configuration** (production): `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` from your provider.
 - **Local development** uses a stand-in: the `dev-keys` service makes a key pair on first start (never committed), the API trusts its public key, and `make token AS=alice` prints a token. That single, non-rotating key is **only accepted with `ENVIRONMENT=dev`**: configured anywhere else, the settings are rejected, and without a JWKS URL a production API refuses to start.
+
+### Posting limits
+
+Every post fans out to all of the author's followers, so one runaway client (or a stolen token) could flood feeds and the pipeline. Each user can post **10 times in a row, then 10 a minute** (`POSTS_BURST`, `POSTS_PER_MINUTE`); beyond that, `429 Too Many Requests` with a `Retry-After` header saying how many seconds until the next post is allowed.
+
+- **A token bucket, kept as one timestamp:** when the user's bucket will be full again. Each post pushes it 6 s further; the bucket is empty when it's a minute ahead of now. No counters to reset, no background refill ([`domain/posting_limit.py`](feed_fanout/domain/posting_limit.py)).
+- **Checked in the same transaction as the post**, with the user's bucket row locked (`SELECT ... FOR UPDATE`). So the limit holds across any number of API instances, a refused post leaves no trace, and an accepted one can't be half-counted. Concurrent posts by the same user take turns; other users aren't affected. A test fires 12 concurrent posts at a bucket with 5 tokens and checks exactly 5 succeed (without the lock, it fails).
+- **In Postgres, not Redis:** it's already there, the check is one row per post, and posting is the low-volume path. A separate store would be worth it for limits on every request, like reads.
+- **Scope:** posting only. Reads and follows are cheap and bounded; a per-IP limit in front of the API (at the load balancer) is the place for coarse abuse protection.
 
 ## The outbox
 
@@ -229,6 +239,7 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `LOG_FORMAT` | `auto`: readable text on a terminal, JSON otherwise (`json`, `text` to force) |
 | `ENVIRONMENT` | `production` (anything but `dev` is treated as production) |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` | how to verify access tokens (see [Authentication](#authentication)) |
+| `POSTS_BURST`, `POSTS_PER_MINUTE` | `10`, `10`: each user's [posting limit](#posting-limits) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
 | `RELAY_HEALTH_PORT` | `8002` (`0` disables) |
 
@@ -255,16 +266,16 @@ Written so each behavior is tested **once**, then proven at every level (the ide
           │                                                      │  outbox, logs, metrics, health (+ compose e2e, failover)
           ├──────────────────────────────────────────────────────┤
           │ acceptance scenarios              [full]             │  the real stack: HTTP, Postgres, Kafka
-          │ FeedRepository contract tests     [postgres]         │
+          │ repository contract tests         [postgres]         │
           ├──────────────────────────────────────────────────────┤
           │ acceptance scenarios              [memory]           │  same scenarios, in-memory adapters
-          │ FeedRepository contract tests     [memory]           │  keeps the fake honest
+          │ repository contract tests         [memory]           │  keeps the fakes honest
   fast    │ unit tests                                           │  domain rules at their exact boundaries
           └──────────────────────────────────────────────────────┘
 ```
 
-- **Acceptance scenarios** (`tests/acceptance/`) are written against a small contract (`follow`, `unfollow`, `post`, `feed`, `settle`) in the users' language, with no HTTP, SQL or Kafka. Each runs on two **assemblies**: `memory` (the real use cases with in-memory adapters, ~160 µs per scenario, the whole set in ~8 ms) and `full` (the real stack, seconds). Same test, both levels.
-- **Contract tests** (`tests/contracts/`) run the same checks against the Postgres repository and the in-memory fake: ordering, tie-breaking, idempotency, even the unknown-post quirk. The fast tests are only as trustworthy as the fake; these catch drift (dropping the fake's tie-break fails exactly the two `[memory]` tie tests).
+- **Acceptance scenarios** (`tests/acceptance/`) are written against a small contract (`follow`, `unfollow`, `post`, `feed`, `settle`, `time_passes`) in the users' language, with no HTTP, SQL or Kafka. Each runs on two **assemblies**: `memory` (the real use cases with in-memory adapters, ~160 µs per scenario, the whole set in ~8 ms) and `full` (the real stack, seconds). Same test, both levels.
+- **Contract tests** (`tests/contracts/`) run the same checks against the Postgres repositories and the in-memory fakes: ordering, tie-breaking, idempotency, even the unknown-post quirk; posting buckets, plus concurrent posts that only Postgres can show. The fast tests are only as trustworthy as the fake; these catch drift (dropping the fake's tie-break fails exactly the two `[memory]` tie tests).
 - **Unit tests** (`tests/unit/`) pin the domain rules at their exact boundaries, and the cursor format.
 - **Infrastructure tests** (`tests/test_*.py`) cover what the contract can't see: Kafka commit semantics, dead-letter headers and replay, SKIP LOCKED, SIGTERM against a real subprocess, rebalancing, metrics and logs. Real Postgres and Kafka in throwaway containers ([testcontainers](https://testcontainers.com/)), the schema built by the real migrations; your dev data is never touched.
 
@@ -274,7 +285,7 @@ make test         # everything (needs Docker)
 make mutation     # mutation testing on the core
 ```
 
-**Mutation testing** ([mutmut](https://github.com/boxed/mutmut)) changes `domain/` and `application/` in small ways (`1 <= len` becomes `2 <= len`, a message becomes `None`, ...) and checks the fast tests notice each change: 100 mutants in ~20 s, **100% detected**, enforced in CI. The first run found 18 gaps (untested boundaries, unchecked error messages) and one real performance risk that no behavior test could see: `ReadFeed` fetching the whole feed instead of one page plus one row, which would behave identically but load a user's entire history from Postgres on every request.
+**Mutation testing** ([mutmut](https://github.com/boxed/mutmut)) changes `domain/` and `application/` in small ways (`1 <= len` becomes `2 <= len`, a message becomes `None`, ...) and checks the fast tests notice each change: ~130 mutants in ~20 s, **100% detected**, enforced in CI. The first run found 18 gaps (untested boundaries, unchecked error messages) and one real performance risk that no behavior test could see: `ReadFeed` fetching the whole feed instead of one page plus one row, which would behave identically but load a user's entire history from Postgres on every request.
 
 ## Observability
 

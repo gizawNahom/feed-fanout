@@ -7,10 +7,13 @@ the relay and worker loops running concurrently in their own processes, settle()
 the same production methods (OutboxRelay.publish_batch, FanoutWorker.process) itself, one
 step at a time. That makes every scenario deterministic, with no waiting and no timeouts.
 
+Time is the other thing it controls: the API's clock is a test clock, moved by time_passes().
+
 The real loops and their concurrency are covered elsewhere: the compose smoke test,
 the shutdown/rebalance tests and the broker failover test.
 """
 
+from datetime import timedelta
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -21,16 +24,23 @@ from sqlalchemy.orm import Session, sessionmaker
 from feed_fanout.adapters.kafka.relay import OutboxRelay
 from feed_fanout.adapters.kafka.worker import Outcome
 from feed_fanout.adapters.postgres.models import OutboxEvent
-from tests.acceptance.contract import FeedPage, Post, Rejected
+from tests.acceptance.contract import FeedPage, Post, Rejected, TooManyPosts
 from tests.auth_keys import auth_header
 from tests.conftest import Worker
+from tests.fakes import TickingClock
 
 
 class FullSystem:
     def __init__(
-        self, client: TestClient, relay: OutboxRelay, worker: Worker, session_factory: sessionmaker[Session]
+        self,
+        client: TestClient,
+        clock: TickingClock,
+        relay: OutboxRelay,
+        worker: Worker,
+        session_factory: sessionmaker[Session],
     ) -> None:
         self.client = client
+        self.clock = clock
         self.relay = relay
         self.worker = worker
         self.session_factory = session_factory
@@ -55,6 +65,9 @@ class FullSystem:
             next_cursor=body["next_cursor"],
         )
 
+    def time_passes(self, seconds: float) -> None:
+        self.clock.advance(timedelta(seconds=seconds))
+
     def settle(self) -> None:
         """Step the pipeline to completion: publish every outbox event, then process exactly
         that many from Kafka. Deterministic: no sleeps, nothing to time out."""
@@ -72,6 +85,8 @@ class FullSystem:
     def _expect(response: Response, status: int) -> Response:
         # Refused: invalid input (400/422), or an identity that can't be valid (401: e.g. an
         # empty or over-long user id can't authenticate).
+        if response.status_code == 429:
+            raise TooManyPosts(int(response.headers["Retry-After"]))
         if response.status_code in (400, 401, 422):
             raise Rejected(response.text)
         assert response.status_code == status, response.text

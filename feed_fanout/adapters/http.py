@@ -39,6 +39,7 @@ from feed_fanout.domain.model import (
     InvalidCursor,
     Rejected,
 )
+from feed_fanout.domain.posting_limit import PostingLimit, TooManyPosts
 from feed_fanout.logs import configure_logging, get_logger
 
 configure_logging(settings.log_level, settings.log_format)
@@ -99,9 +100,14 @@ def get_clock() -> Clock:
     return SystemClock()
 
 
+def get_posting_limit() -> PostingLimit:
+    return settings.posting_limit
+
+
 SessionDep = Annotated[Session, Depends(get_session)]
 UnitOfWorkDep = Annotated[UnitOfWorkFactory, Depends(get_unit_of_work)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
+PostingLimitDep = Annotated[PostingLimit, Depends(get_posting_limit)]
 
 _bearer = HTTPBearer(auto_error=False, description="An access token from the identity provider")
 
@@ -126,6 +132,16 @@ def current_user(
 
 
 CurrentUser = Annotated[str, Depends(current_user)]
+
+
+@app.exception_handler(TooManyPosts)
+def too_many_posts(request: Request, e: TooManyPosts) -> JSONResponse:
+    log.info("post refused: posting limit", retry_after=e.retry_after_seconds)
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": str(e)},
+        headers={"Retry-After": str(e.retry_after_seconds)},
+    )
 
 
 @app.exception_handler(Rejected)
@@ -183,10 +199,16 @@ def ready(session: SessionDep) -> JSONResponse:
 # --- Posts ------------------------------------------------------------------
 
 
-@app.post("/posts", status_code=status.HTTP_201_CREATED)
-def create_post(body: CreatePostBody, user: CurrentUser, unit_of_work: UnitOfWorkDep, clock: ClockDep) -> PostOut:
-    """Post as the signed-in user."""
-    post = CreatePost(unit_of_work, clock)(user, body.text)
+@app.post(
+    "/posts",
+    status_code=status.HTTP_201_CREATED,
+    responses={429: {"description": "Posting too fast: try again after Retry-After seconds"}},
+)
+def create_post(
+    body: CreatePostBody, user: CurrentUser, unit_of_work: UnitOfWorkDep, clock: ClockDep, limit: PostingLimitDep
+) -> PostOut:
+    """Post as the signed-in user. Each user can post a burst of POSTS_BURST, then POSTS_PER_MINUTE."""
+    post = CreatePost(unit_of_work, clock, limit)(user, body.text)
     log.info("post created", post_id=str(post.id), author_id=post.author_id)
     return PostOut.model_validate(post)
 

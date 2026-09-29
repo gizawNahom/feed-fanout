@@ -121,7 +121,7 @@ def engine(postgres_url: str) -> Iterator[Engine]:
 def session_factory(engine: Engine) -> Iterator[sessionmaker[Session]]:
     yield sessionmaker(engine, expire_on_commit=False)
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE feed_items, follows, posts, outbox"))
+        conn.execute(text("TRUNCATE feed_items, follows, posts, outbox, posting_buckets"))
 
 
 def _create_topic(bootstrap: str, name: str, partitions: int) -> str:

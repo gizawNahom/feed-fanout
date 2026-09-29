@@ -4,11 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from feed_fanout.adapters.http import app, get_clock
 from feed_fanout.adapters.kafka.relay import OutboxRelay
 from tests.acceptance.contract import System
 from tests.acceptance.full import FullSystem
 from tests.acceptance.memory import MemorySystem
 from tests.conftest import Worker
+from tests.fakes import TickingClock
 
 
 @pytest.fixture(params=["memory", "full"])
@@ -26,4 +28,6 @@ def system(request: pytest.FixtureRequest) -> Iterator[System]:
         relay: OutboxRelay = request.getfixturevalue("relay")
         worker: Worker = request.getfixturevalue("worker")
         session_factory: sessionmaker[Session] = request.getfixturevalue("session_factory")
-        yield FullSystem(client, relay, worker, session_factory)
+        clock = TickingClock()
+        app.dependency_overrides[get_clock] = lambda: clock  # the client fixture clears overrides
+        yield FullSystem(client, clock, relay, worker, session_factory)

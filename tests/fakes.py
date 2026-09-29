@@ -34,6 +34,7 @@ class InMemoryState:
     follows: set[tuple[str, str]] = field(default_factory=set)  # (follower, followee)
     feeds: dict[str, dict[uuid.UUID, FeedPosition]] = field(default_factory=dict)  # user -> post_id -> position
     outbox: list[OutboxEntry] = field(default_factory=list)
+    posting_buckets: dict[str, datetime] = field(default_factory=dict)  # user -> full_at
 
 
 class InMemoryPosts:
@@ -87,6 +88,19 @@ class InMemoryOutbox:
         self.state.outbox.append(OutboxEntry(post.id, post.author_id, post.created_at))
 
 
+class InMemoryPostingBuckets:
+    """No locking needed: one thread, and each unit of work works on its own copy."""
+
+    def __init__(self, state: InMemoryState) -> None:
+        self.state = state
+
+    def full_at(self, user_id: str) -> datetime | None:
+        return self.state.posting_buckets.get(user_id)
+
+    def set_full_at(self, user_id: str, full_at: datetime) -> None:
+        self.state.posting_buckets[user_id] = full_at
+
+
 class InMemoryUnitOfWork:
     """Works on a copy of the state; commit() makes the copy the state. Like a transaction."""
 
@@ -99,6 +113,7 @@ class InMemoryUnitOfWork:
         self.follows = InMemoryFollows(self.working)
         self.feeds = InMemoryFeeds(self.working)
         self.outbox = InMemoryOutbox(self.working)
+        self.posting_buckets = InMemoryPostingBuckets(self.working)
         return self
 
     def __exit__(
@@ -128,3 +143,6 @@ class TickingClock:
     def now(self) -> datetime:
         self.current += timedelta(milliseconds=1)
         return self.current
+
+    def advance(self, delta: timedelta) -> None:
+        self.current += delta

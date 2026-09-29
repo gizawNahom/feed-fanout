@@ -15,6 +15,14 @@ class Rejected(Exception):
     """The system refused an action (invalid input or a broken rule)."""
 
 
+class TooManyPosts(Exception):
+    """The system refused a post because the author is posting too fast."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(f"retry after {retry_after}s")
+        self.retry_after = retry_after  # whole seconds
+
+
 @dataclass(frozen=True)
 class Post:
     id: str
@@ -40,6 +48,10 @@ class System(Protocol):
     def post(self, author: str, text: str = "hello") -> Post: ...
 
     def feed(self, user: str, limit: int = 20, cursor: str | None = None) -> FeedPage: ...
+
+    def time_passes(self, seconds: float) -> None:
+        """Move the system's clock forward. (Scenarios never sleep.)"""
+        ...
 
     def settle(self) -> None:
         """Wait until everything already accepted has reached followers' feeds.

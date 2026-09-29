@@ -12,6 +12,8 @@ Settings, read from environment variables (or a .env file), with local-developme
     AUTH_AUDIENCE             default feed-fanout-api   expected `aud` of access tokens
     AUTH_JWKS_URL             the identity provider's public keys (production)
     AUTH_DEV_PUBLIC_KEY_FILE  a local public key, accepted ONLY when ENVIRONMENT=dev
+    POSTS_BURST               default 10   posts a user can make in a row...
+    POSTS_PER_MINUTE          default 10   ...then this many a minute (429 beyond that)
     WORKER_HEALTH_PORT        default 8001  (0 disables; GET /health/live, /health/ready)
     RELAY_HEALTH_PORT         default 8002  (0 disables)
 
@@ -19,10 +21,13 @@ Values are validated at startup, so a typo like LOG_LEVEL=VERBOSE fails fast ins
 misbehaving later.
 """
 
+from datetime import timedelta
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import PositiveFloat, PositiveInt, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from feed_fanout.domain.posting_limit import DEFAULT_POSTING_LIMIT, PostingLimit
 
 
 class Settings(BaseSettings):
@@ -44,12 +49,19 @@ class Settings(BaseSettings):
     auth_jwks_url: str | None = None
     auth_dev_public_key_file: str | None = None
 
+    posts_burst: PositiveInt = DEFAULT_POSTING_LIMIT.burst
+    posts_per_minute: PositiveFloat = timedelta(minutes=1) / DEFAULT_POSTING_LIMIT.every
+
     @model_validator(mode="after")
     def dev_key_only_in_dev(self) -> "Settings":
         # A single, non-rotating local key must never be trusted outside development.
         if self.auth_dev_public_key_file and self.environment != "dev":
             raise ValueError("AUTH_DEV_PUBLIC_KEY_FILE is only allowed with ENVIRONMENT=dev")
         return self
+
+    @property
+    def posting_limit(self) -> PostingLimit:
+        return PostingLimit(burst=self.posts_burst, every=timedelta(minutes=1) / self.posts_per_minute)
 
     @property
     def post_created_dlt_topic(self) -> str:

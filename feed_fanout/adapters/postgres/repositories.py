@@ -5,7 +5,7 @@ from datetime import datetime
 from types import TracebackType
 from typing import Self
 
-from sqlalchemy import delete, literal, select, tuple_
+from sqlalchemy import delete, literal, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -97,6 +97,23 @@ class PostgresOutbox:
         self.session.add(models.OutboxEvent(topic=self.topic, key=post.author_id, payload=event.model_dump_json()))
 
 
+class PostgresPostingBuckets:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def full_at(self, user_id: str) -> datetime | None:
+        # Make sure there's a row to lock, then lock it until the transaction ends. A concurrent
+        # post by the same user waits here, then reads what this one wrote. (Even for a user's
+        # very first posts: the second insert waits on the first's, then does nothing.)
+        self.session.execute(insert(models.PostingBucket).values(user_id=user_id).on_conflict_do_nothing())
+        bucket = models.PostingBucket
+        return self.session.scalars(select(bucket.full_at).where(bucket.user_id == user_id).with_for_update()).one()
+
+    def set_full_at(self, user_id: str, full_at: datetime) -> None:
+        bucket = models.PostingBucket
+        self.session.execute(update(bucket).where(bucket.user_id == user_id).values(full_at=full_at))
+
+
 class PostgresUnitOfWork:
     """One database transaction: everything done through it commits together, or not at all."""
 
@@ -110,6 +127,7 @@ class PostgresUnitOfWork:
         self.follows = PostgresFollows(self.session)
         self.feeds = PostgresFeeds(self.session)
         self.outbox = PostgresOutbox(self.session, self.post_created_topic)
+        self.posting_buckets = PostgresPostingBuckets(self.session)
         return self
 
     def __exit__(
