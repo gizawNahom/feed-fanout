@@ -84,9 +84,10 @@ def prometheus(query: str, at: int) -> float | None:
 def read_server(step: Step) -> None:
     w = f"{step.seconds}s"
     q = step.server
-    for p in ("0.5", "0.95", "0.99"):
-        q[f"post_to_feed_p{p[2:]}"] = prometheus(
-            f"histogram_quantile({p}, sum by (le) (increase(feed_fanout_post_to_feed_seconds_bucket[{w}])))", step.end
+    for name, quantile in (("p50", 0.5), ("p95", 0.95), ("p99", 0.99)):
+        q[f"post_to_feed_{name}"] = prometheus(
+            f"histogram_quantile({quantile}, sum by (le) (increase(feed_fanout_post_to_feed_seconds_bucket[{w}])))",
+            step.end,
         )
     q["posts_fanned_out"] = prometheus(f"sum(increase(feed_fanout_post_to_feed_seconds_count[{w}]))", step.end)
     q["fanout_p99"] = prometheus(
@@ -101,6 +102,12 @@ def read_server(step: Step) -> None:
             f'{{method="{method}",route="{route}"}}[{w}])))',
             step.end,
         )
+    served = prometheus(f"sum(increase(feed_fanout_http_requests_total[{w}]))", step.end)
+    q["served_per_second"] = None if served is None else served / step.seconds
+    # "or vector(0)": no 5xx at all means no such series, which should read as 0, not "no data"
+    q["server_5xx"] = prometheus(
+        f'sum(increase(feed_fanout_http_requests_total{{status=~"5.."}}[{w}])) or vector(0)', step.end
+    )
     q["server_5xx_ratio"] = prometheus(
         f'sum(increase(feed_fanout_http_requests_total{{status=~"5.."}}[{w}]))'
         f" / sum(increase(feed_fanout_http_requests_total[{w}]))",
@@ -177,12 +184,21 @@ def judge(steps: list[Step]) -> None:
 # --- Writing ------------------------------------------------------------------------------
 
 
-def ms(seconds: float | None) -> str:
-    return "n/a" if seconds is None else f"{seconds * 1000:.0f} ms"
+# The top finite bucket of each histogram: a percentile at or above it only means "at least".
+LATENCY_TOP = 10.0  # HTTP and fanout durations (feed_fanout/metrics.py _LATENCY)
+POST_TO_FEED_TOP = 300.0
 
 
-def sec(seconds: float | None) -> str:
-    return "n/a" if seconds is None else f"{seconds:.2f} s"
+def ms(seconds: float | None, top: float = LATENCY_TOP) -> str:
+    if seconds is None:
+        return "n/a"
+    return f"> {top:.0f} s" if seconds >= top else f"{seconds * 1000:.0f} ms"
+
+
+def sec(seconds: float | None, top: float = POST_TO_FEED_TOP) -> str:
+    if seconds is None:
+        return "n/a"
+    return f"> {top:.0f} s" if seconds >= top else f"{seconds:.2f} s"
 
 
 def num(value: float | None) -> str:
@@ -208,14 +224,15 @@ def report(run: Path, steps: list[Step]) -> str:
         "",
         "## Steps",
         "",
-        "| Rate (req/s) | Achieved | Failed | Dropped | Posts fanned out | Post→feed p50 / p95 / p99 "
-        "| Lag max (end) | Outbox age max | Sustainable |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Rate (req/s) | Sent (k6) | Served (server) | Failed (k6) | 5xx | Dropped | Posts fanned out "
+        "| Post→feed p50 / p95 / p99 | Lag max (end) | Outbox age max | Sustainable |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in steps:
         reqs = s.k6.get("http_reqs", {})
         lines.append(
-            f"| {s.rate} | {reqs.get('rate', 0):.0f}/s | {s.k6.get('http_req_failed', {}).get('value', 0):.2%} "
+            f"| {s.rate} | {reqs.get('rate', 0):.0f}/s | {num(s.server.get('served_per_second'))}/s "
+            f"| {s.k6.get('http_req_failed', {}).get('value', 0):.2%} | {num(s.server.get('server_5xx'))} "
             f"| {s.k6.get('dropped_iterations', {}).get('count', 0):.0f} | {num(s.server.get('posts_fanned_out'))} "
             f"| {sec(s.server.get('post_to_feed_p50'))} / {sec(s.server.get('post_to_feed_p95'))} / "
             f"{sec(s.server.get('post_to_feed_p99'))} "
@@ -238,8 +255,11 @@ def report(run: Path, steps: list[Step]) -> str:
     lines += [f"- **{s.rate}/s:** " + "; ".join(s.problems) for s in steps if s.problems] or ["- Every step was."]
     lines += [
         "",
-        "Post→feed percentiles come from histogram buckets (0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 300 s),",
-        "so they're interpolated within a bucket, not exact. CPU is % of one core (200% = two cores).",
+        "- **Sent** is what k6 sent per second; **Served** is what the API answered, as it counted them.",
+        "  The gap is requests that never got an answer the server could count (refused, or cut off).",
+        "- Percentiles come from histogram buckets, so they're interpolated within a bucket, not exact;",
+        '  "> 10 s" means at or past the top bucket (10 s for latencies, 300 s for post→feed).',
+        "- CPU is % of one core (200% = two cores).",
     ]
     return "\n".join(lines) + "\n"
 

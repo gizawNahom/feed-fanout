@@ -119,6 +119,8 @@ An overlay rather than the default: with archiving on and nothing taking backups
 
 How much traffic the system sustains on one machine, and what gives out first: [k6](https://k6.io) at a fixed arrival rate against 100,000 seeded users with a power-law follower graph, every service under a fixed CPU and memory limit. Each step reports latency, the post-to-feed delay, consumer lag and resources, and where the knee is. See [loadtest/README.md](loadtest/README.md).
 
+**Results so far:** the [baseline](docs/performance/2026-09-30-baseline/README.md), before any tuning. It shows a ceiling of ~95 requests/s set by the API alone (one core, ~7 ms of CPU per request), a collapse past it (the API runs out of file descriptors), and fanout-on-write holding up except for one celebrity post that blocked the single worker for 10+ seconds.
+
 ```bash
 make loadtest-setup && make loadtest && make loadtest-down
 ```
