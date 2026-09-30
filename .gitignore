@@ -4,6 +4,8 @@ __pycache__/
 venv/
 .env
 .dev-keys/
+loadtest/tokens.json
+loadtest/results/
 .vscode/
 .idea/
 .DS_Store

@@ -1,0 +1,84 @@
+# Load test: the stack with a fixed resource budget per service, plus k6. Layered on top of
+# docker-compose.yml, run as its own project (feed-fanout-load), so your dev data is untouched.
+#
+#   make loadtest-setup   start it, seed users/follows/feeds, make tokens (loadtest/setup.sh)
+#   make loadtest         run the load steps and write a report (loadtest/run.sh)
+#   make loadtest-down    stop it and delete its data
+#
+# Fixed limits make runs comparable: a result belongs to this budget on this machine. They're
+# caps, not reservations: a service uses what it needs, up to its limit. Sized to fit a laptop's
+# WSL (about 7.6 GB, 12 threads) with room to spare; see loadtest/README.md.
+
+x-limits:
+  app: &app-limits
+    resources:
+      limits: {cpus: "1", memory: 512M}
+
+services:
+  api:
+    deploy: *app-limits
+
+  worker:
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 256M}
+
+  relay:
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 256M}
+
+  # Less memory than the seeded data on purpose (1.5 GB vs several GB), so reads hit the disk
+  # the way they do at scale, instead of being served entirely from memory.
+  postgres:
+    command: ["postgres", "-c", "shared_buffers=384MB"]   # 25% of its memory, the usual rule
+    deploy:
+      resources:
+        limits: {cpus: "2", memory: 1536M}
+
+  kafka:
+    environment:
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m   # the JVM's heap; the cap leaves room for the rest
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 1G}
+
+  # Not needed during a run, and Kafka UI alone is a JVM of several hundred MB.
+  kafka-ui:
+    profiles: [tools]
+  adminer:
+    profiles: [tools]
+
+  # Observability: needed to see the knee (lag, outbox age, post-to-feed), capped like the rest.
+  prometheus:
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+  grafana:
+    deploy:
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+  loki:
+    deploy:
+      resources:
+        limits: {cpus: "0.5", memory: 512M}
+  alloy:
+    deploy:
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+  postgres-exporter:
+    deploy:
+      resources:
+        limits: {cpus: "0.25", memory: 128M}
+
+  # The load generator. Capped too, so it can't take CPU from the system under test.
+  # Runs inside the compose network and calls the API as http://api:8000.
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [loadtest]
+    volumes:
+      - ./loadtest:/loadtest:ro
+      - ./loadtest/results:/results
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 1G}

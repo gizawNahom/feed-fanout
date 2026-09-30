@@ -115,6 +115,14 @@ make restore TO="2026-09-30 10:15:00+00"    # the database as it was at that mom
 
 An overlay rather than the default: with archiving on and nothing taking backups, unarchived WAL would pile up until the disk is full. In production, point the repository at object storage (S3) and take the passphrase from a secret store; or use managed Postgres, which does all of this for you.
 
+### Load test
+
+How much traffic the system sustains on one machine, and what gives out first: [k6](https://k6.io) at a fixed arrival rate against 100,000 seeded users with a power-law follower graph, every service under a fixed CPU and memory limit. Each step reports latency, the post-to-feed delay, consumer lag and resources, and where the knee is. See [loadtest/README.md](loadtest/README.md).
+
+```bash
+make loadtest-setup && make loadtest && make loadtest-down
+```
+
 ### Running the app outside Docker (for development)
 
 Requires [uv](https://docs.astral.sh/uv/). Start only the infrastructure and setup services, then run the processes on your machine (they log readable text on a terminal):
@@ -343,7 +351,7 @@ make up-observability     # = docker compose --profile observability up -d --bui
 - **Labels are low-cardinality only:** routes are recorded as templates (`/me/following/{followee_id}`), never raw paths, and nothing is labelled by user or post. Every distinct label value is a new time series; per-post detail lives in the logs.
 - **Every worker is scraped,** including ones added with `--scale worker=N`: Prometheus discovers them through Compose's DNS.
 
-**SLO: 99% of posts reach followers' feeds within 5 seconds.** Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.
+**SLO: 99% of posts reach followers' feeds within 5 seconds** (provisional: a placeholder until the [load test](loadtest/README.md) measures what the system achieves; the target will be set from those numbers). Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.
 
 **Alerts** ([`observability/prometheus/rules.yml`](observability/prometheus/rules.yml)): the SLO burn; consumer lag high; an outbox event stuck for over a minute; events dead-lettered; API error rate; a target down; WAL archiving failing, and backups stale (with the backup overlay). They're **unit-tested** with `promtool test rules` (in CI, and `make rules`), which feeds synthetic time series through the rules and checks exactly when each alert fires, including that a 5-minute spike doesn't page anyone. (They show in Prometheus's Alerts page; routing them to Slack or a pager would be Alertmanager's job.)
 

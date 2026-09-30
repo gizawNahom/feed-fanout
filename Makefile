@@ -4,8 +4,9 @@ CLUSTER := docker compose -f docker-compose.yml -f docker-compose.cluster.yml
 BACKUP := docker compose -f docker-compose.yml -f docker-compose.backup.yml
 # Every file, so down/reset also clean up whatever overlay was started.
 ALL := docker compose -f docker-compose.yml -f docker-compose.cluster.yml -f docker-compose.backup.yml
+LOAD := COMPOSE_PROJECT_NAME=feed-fanout-load docker compose -f docker-compose.yml -f docker-compose.loadtest.yml --profile observability --profile loadtest
 
-.PHONY: up up-cluster up-backup up-observability down reset backup restore token logs smoke failover restore-test test test-fast mutation lint rules help
+.PHONY: up up-cluster up-backup up-observability down reset backup restore token logs smoke failover restore-test loadtest-setup loadtest loadtest-down test test-fast mutation lint rules help
 
 up:          ## Whole stack, single Kafka broker
 	docker compose up -d --build --wait
@@ -45,6 +46,15 @@ failover:    ## Kill brokers in a 3-broker cluster and check nothing is lost (is
 
 restore-test: ## Back up, DELETE FROM posts, restore to the moment before (isolated stack)
 	scripts/restore_test.sh
+
+loadtest-setup: ## Load test stack (resource limits), 100k seeded users, tokens: see loadtest/README.md
+	loadtest/setup.sh
+
+loadtest:    ## Run the load steps and write a report to loadtest/results/ (after loadtest-setup)
+	loadtest/run.sh
+
+loadtest-down: ## Stop the load test stack and delete its data
+	$(LOAD) down --volumes --remove-orphans
 
 test:        ## All tests (needs Docker)
 	uv run pytest

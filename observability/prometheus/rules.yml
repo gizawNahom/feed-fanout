@@ -7,6 +7,10 @@
 groups:
   # --- SLO: 99% of posts reach followers' feeds within 5 seconds ---------------------
   #
+  # PROVISIONAL: 5 s is a placeholder, not yet grounded in a measurement or a product decision.
+  # The load test (loadtest/README.md) measures the post-to-feed delay; the target is then set
+  # from those numbers and what users need, and this rule (and its tests) updated to match.
+  #
   # The error budget is the 1% of posts allowed to be slower. Rather than alerting on
   # "any slow post", alert on the *rate* the budget is being spent (burn rate). A 14.4x
   # burn would use up a 30-day budget in about 2 days. Requiring it over both a short

@@ -259,6 +259,10 @@ def make_consumer(bootstrap_servers: str, group_id: str) -> Consumer:
             # Kafka's new consumer rebalance protocol (KIP-848, GA in Kafka 4.0): rebalances are
             # incremental, so only partitions that actually move are paused, not the whole group.
             "group.protocol": "consumer",
+            # The client prefetches in the background, 64 MB by default. That buffer is the part of
+            # a worker's memory that grows with lag, so cap it: events are ~200 bytes, and 16 MB
+            # is still tens of thousands ready to process. Keeps memory predictable under load.
+            "queued.max.messages.kbytes": 16384,
         }
     )
 
