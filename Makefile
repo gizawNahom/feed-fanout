@@ -1,8 +1,11 @@
 # Shortcuts for common tasks. Every target is a plain command you can also run directly.
 
 CLUSTER := docker compose -f docker-compose.yml -f docker-compose.cluster.yml
+BACKUP := docker compose -f docker-compose.yml -f docker-compose.backup.yml
+# Every file, so down/reset also clean up whatever overlay was started.
+ALL := docker compose -f docker-compose.yml -f docker-compose.cluster.yml -f docker-compose.backup.yml
 
-.PHONY: up up-cluster up-observability down reset token logs smoke failover test test-fast mutation lint rules help
+.PHONY: up up-cluster up-backup up-observability down reset backup restore token logs smoke failover restore-test test test-fast mutation lint rules help
 
 up:          ## Whole stack, single Kafka broker
 	docker compose up -d --build --wait
@@ -10,14 +13,23 @@ up:          ## Whole stack, single Kafka broker
 up-cluster:  ## Whole stack, 3-broker Kafka cluster (needs a reset when switching: make reset)
 	$(CLUSTER) up -d --build --wait
 
+up-backup:   ## Whole stack plus continuous backups (pgBackRest): point-in-time restore
+	$(BACKUP) up -d --build --wait
+
 up-observability: ## Whole stack plus Prometheus (:9090), Grafana (:3000), Loki and Alloy
 	docker compose --profile observability up -d --build --wait
 
-down:        ## Stop the stack (single broker or cluster, with or without observability), keep the data
-	$(CLUSTER) --profile observability down --remove-orphans
+down:        ## Stop the stack (any overlay, with or without observability), keep the data
+	$(ALL) --profile observability down --remove-orphans
 
-reset:       ## Stop the stack and delete its data
-	$(CLUSTER) --profile observability down --volumes --remove-orphans
+reset:       ## Stop the stack and delete its data (and its backups)
+	$(ALL) --profile observability down --volumes --remove-orphans
+
+backup:      ## Take a full backup now (stack started with make up-backup)
+	$(BACKUP) exec backup pgbackrest --stanza=main --type=full backup
+
+restore:     ## Restore the database: make restore (everything archived) or make restore TO="2026-09-30 10:15:00+00"
+	scripts/restore.sh $(if $(TO),"$(TO)")
 
 token:       ## Print a dev access token: make token AS=alice
 	@docker compose run --rm --no-deps -T dev-keys python -m feed_fanout.devtools token $(AS)
@@ -30,6 +42,9 @@ smoke:       ## End-to-end check: post -> follower's feed
 
 failover:    ## Kill brokers in a 3-broker cluster and check nothing is lost (isolated stack)
 	scripts/failover_test.sh
+
+restore-test: ## Back up, DELETE FROM posts, restore to the moment before (isolated stack)
+	scripts/restore_test.sh
 
 test:        ## All tests (needs Docker)
 	uv run pytest

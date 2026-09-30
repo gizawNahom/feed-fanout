@@ -116,3 +116,85 @@ tests:
             exp_annotations:
               summary: A process stopped reporting metrics
               description: Prometheus can't scrape one of the services; it is down or unreachable.
+
+  # WAL archiving: works for 10 minutes, then every attempt fails. It fires once 10 minutes
+  # have passed without a single success (20m), plus the 5 minutes of `for`...
+  - interval: 1m
+    input_series:
+      - series: pg_stat_archiver_failed_count
+        values: 0x10 1+1x30
+      - series: pg_stat_archiver_archived_count
+        values: 0+1x10 10x30
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: WALArchivingFailing
+        exp_alerts: []  # failing, but the last success is still recent
+      - eval_time: 27m
+        alertname: WALArchivingFailing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: Postgres can't archive its WAL
+              description: WAL archiving has failed for over 10 minutes without a single success. Recent changes aren't backed up (the 1-minute RPO no longer holds), and unarchived WAL piles up until the disk is full. Check the postgres container's logs for archive-push errors.
+
+  # ...but not for the failures at startup, before the repository exists.
+  - interval: 1m
+    input_series:
+      - series: pg_stat_archiver_failed_count
+        values: 0 3 9 9x27
+      - series: pg_stat_archiver_archived_count
+        values: 0 0 0 1+1x27
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WALArchivingFailing
+        exp_alerts: []
+
+  # Backups: stale after 26 hours without a full backup...
+  - interval: 1m
+    input_series:
+      - series: pgbackrest_backup_since_last_completion_seconds{backup_type="full",stanza="main"}
+        values: 93000+60x30
+      - series: pgbackrest_exporter_status{stanza="all-stanzas"}
+        values: 1x30
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: BackupsStale
+        exp_alerts: []  # 25h 59m: not yet
+      - eval_time: 25m
+        alertname: BackupsStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              stanza: main
+            exp_annotations:
+              summary: No recent full backup
+              description: The newest full backup is over 26 hours old (they're taken every 24), or the backup repository can't be read. Restores still work from older backups plus WAL, but take longer. Check the backup container's logs.
+
+  # ...or when the repository can't be read at all...
+  - interval: 1m
+    input_series:
+      - series: pgbackrest_exporter_status{stanza="all-stanzas"}
+        values: 0x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: BackupsStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              stanza: all-stanzas
+            exp_annotations:
+              summary: No recent full backup
+              description: The newest full backup is over 26 hours old (they're taken every 24), or the backup repository can't be read. Restores still work from older backups plus WAL, but take longer. Check the backup container's logs.
+
+  # ...but not while the daily backups keep coming (the age resets every 24 hours).
+  - interval: 1h
+    input_series:
+      - series: pgbackrest_backup_since_last_completion_seconds{backup_type="full",stanza="main"}
+        values: 0+3600x23 0+3600x23
+      - series: pgbackrest_exporter_status{stanza="all-stanzas"}
+        values: 1x47
+    alert_rule_test:
+      - eval_time: 47h
+        alertname: BackupsStale
+        exp_alerts: []

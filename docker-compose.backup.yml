@@ -1,0 +1,85 @@
+# Backups with point-in-time recovery (pgBackRest), layered on top of docker-compose.yml.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.backup.yml up -d --build --wait
+#   (or: make up-backup)
+#
+# Postgres archives its WAL (the log of every change) as it goes, and a scheduler takes a full
+# backup every day. Together they can restore the database to any moment since the oldest kept
+# backup: after losing the disk, or to the second before a mistaken DELETE or a bad migration.
+#
+#   RPO (data you can lose): at most archive_timeout, 60 s of writes
+#   RTO (time to restore):   measured by scripts/restore_test.sh; see docs/runbooks/restore.md
+#
+# An overlay, not part of the default stack: with archiving on and nothing to take backups,
+# unarchived WAL would pile up and eventually fill the disk.
+
+x-pgbackrest-env: &pgbackrest-env
+  PGBACKREST_PG1_USER: feed   # the superuser created from POSTGRES_USER
+  # Local development only. In production: a long random secret from a secret store, kept
+  # apart from the backups themselves (lose it, and the backups can't be read).
+  PGBACKREST_REPO1_CIPHER_PASS: dev-only-backup-passphrase
+  # Here the repository is a Docker volume. In production, keep it off this machine, e.g. S3:
+  #   PGBACKREST_REPO1_TYPE=s3, PGBACKREST_REPO1_S3_BUCKET, PGBACKREST_REPO1_S3_ENDPOINT,
+  #   PGBACKREST_REPO1_S3_REGION, PGBACKREST_REPO1_S3_KEY, PGBACKREST_REPO1_S3_KEY_SECRET
+
+services:
+  postgres:
+    build: backup/
+    image: feed-fanout-postgres:local
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=pgbackrest --stanza=main archive-push %p
+      # Ship the current WAL segment at least every minute, even if it isn't full: the RPO.
+      - -c
+      - archive_timeout=60
+    environment: *pgbackrest-env
+    volumes:
+      - pgbackrest-repo:/var/lib/pgbackrest
+      - postgres-socket:/var/run/postgresql
+
+  # Takes the scheduled full backups. Runs next to the database: it reads the data directory
+  # and talks to Postgres through its Unix socket, both shared by volume.
+  backup:
+    image: feed-fanout-postgres:local
+    command: ["backup-scheduler"]
+    user: postgres
+    restart: unless-stopped
+    environment:
+      <<: *pgbackrest-env
+      BACKUP_INTERVAL_HOURS: 24
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - pgbackrest-repo:/var/lib/pgbackrest
+      - postgres-socket:/var/run/postgresql
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Healthy once a first full backup exists (the first one runs at startup).
+      test: ["CMD", "test", "-f", "/tmp/pgbackrest/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
+
+  # The backups' state for Prometheus: age of the newest full backup, repository status.
+  # Only with the observability profile too: make up-backup, plus --profile observability.
+  pgbackrest-exporter:
+    image: woblerr/pgbackrest_exporter:v0.24.0
+    profiles: [observability]
+    # Never as root: the image's entrypoint would then chown the repository to its own user,
+    # and Postgres could no longer archive into it. Its own user (2001) can run the exporter;
+    # the postgres group (70) can read the repository, mounted read-only anyway.
+    user: "2001:70"
+    environment:
+      PGBACKREST_REPO1_CIPHER_PASS: dev-only-backup-passphrase   # the same as above
+    volumes:
+      - pgbackrest-repo:/var/lib/pgbackrest:ro
+      - ./backup/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+
+volumes:
+  pgbackrest-repo:
+  postgres-socket:

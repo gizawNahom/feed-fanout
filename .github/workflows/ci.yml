@@ -103,3 +103,14 @@ jobs:
       # Kills 1, then 2 of 3 brokers while posting, and checks that no post is lost.
       - name: Failover test
         run: scripts/failover_test.sh
+
+  restore:
+    name: Backup and point-in-time restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Posts, a backup, a mistaken DELETE FROM posts, then a restore to the moment before it,
+      # through the same script the restore runbook uses.
+      - name: Restore test
+        run: scripts/restore_test.sh

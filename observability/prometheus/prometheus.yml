@@ -23,6 +23,19 @@ scrape_configs:
         port: 8001
         refresh_interval: 15s
 
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # Only exists with the backup overlay (docker-compose.backup.yml). Discovered by DNS like the
+  # workers, so without it there's simply no target, rather than a target that's down.
+  - job_name: pgbackrest
+    dns_sd_configs:
+      - names: ["pgbackrest-exporter"]
+        type: A
+        port: 9854
+        refresh_interval: 15s
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]

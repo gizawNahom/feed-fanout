@@ -98,6 +98,23 @@ make up-cluster     # = docker compose -f docker-compose.yml -f docker-compose.c
 
 `make failover` ([`scripts/failover_test.sh`](scripts/failover_test.sh)) proves it on an isolated copy of the stack: it kills one broker and checks that posts still arrive, kills a second and checks that posts are accepted but held back, then restarts both and checks that every post is delivered. It runs in CI on every push.
 
+### Backups: point-in-time restore
+
+Postgres is the only source of truth, so it's backed up continuously with [pgBackRest](https://pgbackrest.org), in another overlay:
+
+```bash
+make up-backup                              # the stack, with WAL archiving and daily full backups
+make restore TO="2026-09-30 10:15:00+00"    # the database as it was at that moment
+```
+
+- **How:** Postgres archives its WAL (the log of every change) as it goes, at least every 60 seconds, and a scheduler takes a full backup daily and keeps 7. A restore takes the newest full backup before the target and replays WAL up to that exact moment. Backups are compressed and encrypted (AES-256).
+- **RPO** (data you can lose): at most 60 s of writes if the machine is lost; nothing before the chosen moment for a planned restore, such as undoing a mistaken `DELETE`. **RTO:** about 10 s for the database in the test (small data); it grows with the database size and a day's WAL.
+- **Tested on every push:** `make restore-test` ([`scripts/restore_test.sh`](scripts/restore_test.sh)) posts, notes a moment T, posts again, runs `DELETE FROM posts`, then restores to T through the same [`scripts/restore.sh`](scripts/restore.sh) an operator would use. It checks the posts before T are back (feeds too), the one after isn't, and new posts fan out on the restored database.
+- **Monitored:** `WALArchivingFailing` and `BackupsStale` alerts, from `postgres_exporter` and `pgbackrest_exporter` (with the observability profile).
+- **Kafka after a restore:** the database is now older than Kafka, and the outbox plus idempotent fanout make that safe: republished events add nothing, and events for posts lost by the restore go to the dead-letter topic. Details, and the full procedure, in the [restore runbook](docs/runbooks/restore.md).
+
+An overlay rather than the default: with archiving on and nothing taking backups, unarchived WAL would pile up until the disk is full. In production, point the repository at object storage (S3) and take the passphrase from a secret store; or use managed Postgres, which does all of this for you.
+
 ### Running the app outside Docker (for development)
 
 Requires [uv](https://docs.astral.sh/uv/). Start only the infrastructure and setup services, then run the processes on your machine (they log readable text on a terminal):
@@ -258,7 +275,7 @@ uv run ruff format .             # format
 uv run mypy feed_fanout tests    # types (strict)
 ```
 
-CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14, plus the end-to-end smoke test against the containerized stack and the broker failover test against the 3-node cluster.
+CI ([GitHub Actions](.github/workflows/ci.yml)) runs all of these on every push and pull request, with tests on Python 3.12 (the oldest supported) and 3.14, plus the end-to-end smoke test against the containerized stack, the broker failover test against the 3-node cluster, and the backup and point-in-time restore test.
 
 A separate [security workflow](.github/workflows/security.yml) runs on every push and weekly: pip-audit on the locked dependencies, Trivy on the container image and for committed secrets. See [SECURITY.md](SECURITY.md) for what's in place and how to report a vulnerability.
 
@@ -328,7 +345,7 @@ make up-observability     # = docker compose --profile observability up -d --bui
 
 **SLO: 99% of posts reach followers' feeds within 5 seconds.** Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.
 
-**Alerts** ([`observability/prometheus/rules.yml`](observability/prometheus/rules.yml)): the SLO burn; consumer lag high; an outbox event stuck for over a minute; events dead-lettered; API error rate; a target down. They're **unit-tested** with `promtool test rules` (in CI, and `make rules`), which feeds synthetic time series through the rules and checks exactly when each alert fires, including that a 5-minute spike doesn't page anyone. (They show in Prometheus's Alerts page; routing them to Slack or a pager would be Alertmanager's job.)
+**Alerts** ([`observability/prometheus/rules.yml`](observability/prometheus/rules.yml)): the SLO burn; consumer lag high; an outbox event stuck for over a minute; events dead-lettered; API error rate; a target down; WAL archiving failing, and backups stale (with the backup overlay). They're **unit-tested** with `promtool test rules` (in CI, and `make rules`), which feeds synthetic time series through the rules and checks exactly when each alert fires, including that a 5-minute spike doesn't page anyone. (They show in Prometheus's Alerts page; routing them to Slack or a pager would be Alertmanager's job.)
 
 ### Logs
 

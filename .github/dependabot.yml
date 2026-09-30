@@ -17,9 +17,10 @@ updates:
       actions:
         patterns: ["*"]
 
-  # The base image in the Dockerfile, and the service images in the compose files.
+  # The base images in the Dockerfiles (the app's, and Postgres with pgBackRest), and the
+  # service images in the compose files.
   - package-ecosystem: docker
-    directory: /
+    directories: ["/", "/backup"]
     schedule:
       interval: weekly
     groups:

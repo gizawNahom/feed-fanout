@@ -228,6 +228,17 @@ services:
       timeout: 5s
       retries: 6
 
+  # Postgres's own health for Prometheus, including WAL archiving (pg_stat_archiver), which the
+  # backups depend on (see docker-compose.backup.yml).
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    profiles: [observability]
+    environment:
+      DATA_SOURCE_NAME: postgresql://feed:feed@postgres:5432/feed?sslmode=disable   # local development only
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Log store. Queried through Grafana (Explore -> Loki, or the dashboard's logs panels).
   loki:
     image: grafana/loki:3.7.8

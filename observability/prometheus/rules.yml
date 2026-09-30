@@ -88,3 +88,35 @@ groups:
         annotations:
           summary: A process stopped reporting metrics
           description: Prometheus can't scrape one of the services; it is down or unreachable.
+
+  # --- Backups (docker-compose.backup.yml) --------------------------------------------
+  #
+  # Metric names come from postgres_exporter v0.20.1 and pgbackrest_exporter v0.24.0 (pinned
+  # in the compose files). The metric contract test only covers the app's own metrics, so
+  # re-check these names when upgrading either exporter.
+  - name: backups
+    rules:
+      # Failures alone aren't enough: Postgres tries to archive before the backup scheduler
+      # has created the repository, so a fresh stack starts with a few. Failing *and* nothing
+      # archived for 10 minutes means archiving is really broken.
+      - alert: WALArchivingFailing
+        expr: |
+          increase(pg_stat_archiver_failed_count[10m]) > 0
+          and increase(pg_stat_archiver_archived_count[10m]) == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Postgres can't archive its WAL
+          description: WAL archiving has failed for over 10 minutes without a single success. Recent changes aren't backed up (the 1-minute RPO no longer holds), and unarchived WAL piles up until the disk is full. Check the postgres container's logs for archive-push errors.
+
+      - alert: BackupsStale
+        expr: |
+          max by (stanza) (pgbackrest_backup_since_last_completion_seconds{backup_type="full"}) > 26 * 3600
+          or pgbackrest_exporter_status == 0
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: No recent full backup
+          description: The newest full backup is over 26 hours old (they're taken every 24), or the backup repository can't be read. Restores still work from older backups plus WAL, but take longer. Check the backup container's logs.
