@@ -24,10 +24,14 @@ services:
   api:
     deploy: *app-limits
 
+  # One worker per partition (the topic has 3), as production would run them: a slow fanout (a
+  # celebrity's post) then holds up only its own partition, not every post. Each used ~3% of a
+  # core in the first load test, so half a core each is plenty. (The dev stack keeps 1.)
   worker:
     deploy:
+      replicas: 3
       resources:
-        limits: {cpus: "1", memory: 256M}
+        limits: {cpus: "0.5", memory: 256M}
 
   relay:
     deploy:

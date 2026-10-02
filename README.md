@@ -193,6 +193,15 @@ Every post fans out to all of the author's followers, so one runaway client (or 
 - **In Postgres, not Redis:** it's already there, the check is one row per post, and posting is the low-volume path. A separate store would be worth it for limits on every request, like reads.
 - **Scope:** posting only. Reads and follows are cheap and bounded; a per-IP limit in front of the API (at the load balancer) is the place for coarse abuse protection.
 
+### Overload protection
+
+Past its capacity, the API answers new requests at once with `503 Service Unavailable` and `Retry-After: 1`, instead of queuing them. The cap is the number of requests in flight (`API_MAX_IN_FLIGHT`, default 100).
+
+- **Why:** in the [first load test](docs/performance/2026-09-30-baseline/README.md), past capacity, requests piled up (in flight = arrival rate × time each takes, Little's law), connections with them, until the process ran out of file descriptors and couldn't even reach its database. It served *less* the harder it was pushed. Turning the excess away cheaply keeps it serving at capacity; clients retry.
+- **Health checks and `/metrics` are never turned away,** so probes and Prometheus can still see an overloaded API.
+- **Visible:** turned-away requests are counted under the route `overloaded`, and feed the API error-rate alert.
+- **More capacity is horizontal:** one API process uses at most one core (Python's GIL); run more instances behind a load balancer. Likewise, run **one fanout worker per partition** (3) in production, at least 2 for redundancy: a slow fanout (a celebrity's post) then holds up only its own partition. The dev stack runs 1 to stay light; `docker compose up --scale worker=3` runs 3.
+
 ## The outbox
 
 Saving a post and publishing its event are two writes to two systems. Done one after the other, a crash in between leaves a post that is never fanned out, or an event for a post that was never saved (the **dual-write problem**).
@@ -271,6 +280,7 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `ENVIRONMENT` | `production`. `dev` allows the local database default and the dev signing key; nothing else does |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` | how to verify access tokens (see [Authentication](#authentication)) |
 | `POSTS_BURST`, `POSTS_PER_MINUTE` | `10`, `10`: each user's [posting limit](#posting-limits) |
+| `API_MAX_IN_FLIGHT` | `100`: requests the API handles at once; beyond, an immediate 503 ([overload protection](#overload-protection)) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
 | `RELAY_HEALTH_PORT` | `8002` (`0` disables) |
 
@@ -353,7 +363,7 @@ make up-observability     # = docker compose --profile observability up -d --bui
 - **Labels are low-cardinality only:** routes are recorded as templates (`/me/following/{followee_id}`), never raw paths, and nothing is labelled by user or post. Every distinct label value is a new time series; per-post detail lives in the logs.
 - **Every worker is scraped,** including ones added with `--scale worker=N`: Prometheus discovers them through Compose's DNS.
 
-**SLO: 99% of posts reach followers' feeds within 5 seconds** (provisional: a placeholder until the [load test](loadtest/README.md) measures what the system achieves; the target will be set from those numbers). Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.
+**SLO: 99% of posts reach followers' feeds within 2 seconds,** set from the [load test measurements](docs/performance/): p99 about 1 s under normal load, and under 2 s even while the API was overloaded. Instead of alerting on any slow post, the alert fires when the error budget (the 1% allowed to be slower) is burning fast: over 14.4% slow, over both the last 5 minutes and the last hour. That catches real problems quickly and ignores brief spikes.
 
 **Alerts** ([`observability/prometheus/rules.yml`](observability/prometheus/rules.yml)): the SLO burn; consumer lag high; an outbox event stuck for over a minute; events dead-lettered; API error rate; a target down; WAL archiving failing, and backups stale (with the backup overlay). They're **unit-tested** with `promtool test rules` (in CI, and `make rules`), which feeds synthetic time series through the rules and checks exactly when each alert fires, including that a 5-minute spike doesn't page anyone. (They show in Prometheus's Alerts page; routing them to Slack or a pager would be Alertmanager's job.)
 

@@ -10,10 +10,11 @@ import re
 from pathlib import Path
 
 import pytest
-from prometheus_client import REGISTRY
+from prometheus_client import REGISTRY, Histogram
+from prometheus_client.utils import floatToGoString
 from sqlalchemy.orm import Session, sessionmaker
 
-import feed_fanout.metrics  # noqa: F401  (registers the app's metrics)
+import feed_fanout.metrics
 from feed_fanout.adapters.kafka.lag import ConsumerGroupLagCollector
 from feed_fanout.adapters.kafka.relay import OutboxCollector
 
@@ -74,3 +75,39 @@ def test_the_check_catches_a_renamed_metric(known_names: set[str]) -> None:
     query = "max(feed_fanout_outbox_oldest_event_age_seconds) > 60"  # the real one is ..._oldest_age_seconds
 
     assert set(METRIC_NAME.findall(query)) - known_names == {"feed_fanout_outbox_oldest_event_age_seconds"}
+
+
+# --- Histogram buckets ---------------------------------------------------------------
+#
+# A bucket is selected by its exact label value, as the client library writes it: a bound of 2
+# is le="2.0". A rule selecting le="2" matches nothing, silently. The SLO rules did exactly
+# that until 2026-10-02 (le="5"), so the SLO alert could never fire; promtool's tests passed
+# because their synthetic series used the same wrong label.
+
+BUCKET_SELECTOR = re.compile(r'\b(feed_fanout_[a-z0-9_]+)_bucket\{[^}]*\ble="([^"]+)"')
+
+
+def exposed_buckets() -> dict[str, set[str]]:
+    """Every histogram's bucket label values, exactly as they're exposed (and stored)."""
+    return {
+        h._name: {floatToGoString(b) for b in h._upper_bounds}  # type: ignore[no-untyped-call]  # untyped in prometheus_client
+        for h in vars(feed_fanout.metrics).values()
+        if isinstance(h, Histogram)
+    }
+
+
+def bad_bucket_selectors(promql: str, buckets: dict[str, set[str]]) -> set[tuple[str, str]]:
+    return {(name, le) for name, le in BUCKET_SELECTOR.findall(promql) if le not in buckets.get(name, set())}
+
+
+def test_alert_rules_only_select_buckets_that_exist() -> None:
+    rules = RULES.read_text()
+    assert BUCKET_SELECTOR.search(rules), "found no bucket selectors in the rules; is the pattern still right?"
+    assert bad_bucket_selectors(rules, exposed_buckets()) == set()
+
+
+def test_the_bucket_check_catches_an_integer_label() -> None:
+    # The original bug: a whole number written without ".0".
+    query = 'sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="2"}[5m]))'
+
+    assert bad_bucket_selectors(query, exposed_buckets()) == {("feed_fanout_post_to_feed_seconds", "2")}

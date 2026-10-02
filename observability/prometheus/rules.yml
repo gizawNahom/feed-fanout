@@ -5,11 +5,15 @@
 #   ticket  needs attention, but not at 3am
 
 groups:
-  # --- SLO: 99% of posts reach followers' feeds within 5 seconds ---------------------
+  # --- SLO: 99% of posts reach followers' feeds within 2 seconds ---------------------
   #
-  # PROVISIONAL: 5 s is a placeholder, not yet grounded in a measurement or a product decision.
-  # The load test (loadtest/README.md) measures the post-to-feed delay; the target is then set
-  # from those numbers and what users need, and this rule (and its tests) updated to match.
+  # Set from measurements (docs/performance/): p99 about 1 s under normal load, and under 2 s
+  # even while the API was overloaded. Rare stalls behind a celebrity's fanout are what the 1%
+  # error budget is for.
+  #
+  # le="2.0", not le="2": the client library writes bucket bounds as floats, and Prometheus
+  # matches label values as exact strings. (Until 2026-10-02 these rules said le="5" and matched
+  # nothing, so the SLO alert could never fire. The metric contract test now checks this.)
   #
   # The error budget is the 1% of posts allowed to be slower. Rather than alerting on
   # "any slow post", alert on the *rate* the budget is being spent (burn rate). A 14.4x
@@ -20,13 +24,13 @@ groups:
       - record: feed_fanout:post_to_feed_slow:ratio_rate5m
         expr: |
           1 - (
-            sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="5"}[5m]))
+            sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="2.0"}[5m]))
             / sum(rate(feed_fanout_post_to_feed_seconds_count[5m]))
           )
       - record: feed_fanout:post_to_feed_slow:ratio_rate1h
         expr: |
           1 - (
-            sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="5"}[1h]))
+            sum(rate(feed_fanout_post_to_feed_seconds_bucket{le="2.0"}[1h]))
             / sum(rate(feed_fanout_post_to_feed_seconds_count[1h]))
           )
 
@@ -40,7 +44,7 @@ groups:
           severity: page
         annotations:
           summary: Posts are reaching feeds too slowly
-          description: More than 14.4% of posts took over 5s to reach followers' feeds, over both the last 5 minutes and the last hour. The 99%-within-5s SLO is burning its error budget fast. Check consumer lag, fanout duration, and the outbox.
+          description: More than 14.4% of posts took over 2s to reach followers' feeds, over both the last 5 minutes and the last hour. The 99%-within-2s SLO is burning its error budget fast. Check consumer lag, fanout duration, and the outbox.
 
   # --- The pipeline ---------------------------------------------------------------
   - name: pipeline
@@ -83,7 +87,7 @@ groups:
           severity: page
         annotations:
           summary: The API is failing requests
-          description: More than 5% of API requests returned a 5xx over the last 5 minutes.
+          description: More than 5% of API requests returned a 5xx over the last 5 minutes. If the route label is "overloaded", the API is turning requests away at capacity (ShedLoad) - scale out the API; otherwise look at the errors in its logs.
 
       - alert: TargetDown
         expr: up == 0

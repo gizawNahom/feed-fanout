@@ -30,8 +30,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Posts in feeds within 5s (last hour)",
-      "description": "SLO: 99% of posts reach followers' feeds within 5 seconds.",
+      "title": "Posts in feeds within 2s (last hour)",
+      "description": "SLO: 99% of posts reach followers' feeds within 2 seconds.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

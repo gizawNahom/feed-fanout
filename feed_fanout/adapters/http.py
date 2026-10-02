@@ -96,7 +96,10 @@ class RecordMetrics:
             await self.app(scope, receive, send_and_note_status)
         finally:
             route = scope.get("route")  # set by the router once it has matched the request
-            template = route.path if isinstance(route, APIRoute) else "unmatched"
+            if isinstance(route, APIRoute):
+                template = route.path
+            else:
+                template = "overloaded" if scope.get("overloaded") else "unmatched"
             metrics.HTTP_DURATION.labels(scope["method"], template).observe(time.perf_counter() - start)
             metrics.HTTP_REQUESTS.labels(scope["method"], template, str(status_code)).inc()
 
@@ -121,8 +124,52 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+class ShedLoad:
+    """Overload protection: past `limit` requests in flight, answer new ones at once with 503 and
+    Retry-After, instead of queuing them.
+
+    Without it, the first load test showed what happens: past the API's capacity, requests pile
+    up (in flight = arrival rate x time each takes), connections pile up with them, the process
+    runs out of file descriptors, and then it can't even open a database connection. It served
+    *less* the harder it was pushed. With it, the API keeps serving at capacity and turns the
+    rest away cheaply; clients can retry.
+
+    Health checks and /metrics are never shed: an overloaded API must still answer its probes,
+    and Prometheus must still see it (in the first load test, its metrics had gaps exactly then).
+    """
+
+    EXEMPT = frozenset({"/health/live", "/health/ready", "/metrics"})
+
+    def __init__(self, app: ASGIApp, limit: int) -> None:
+        self.app = app
+        self.limit = limit
+        self.in_flight = 0  # only touched on the event loop: no lock needed
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"] in self.EXEMPT:
+            await self.app(scope, receive, send)
+            return
+        if self.in_flight >= self.limit:
+            scope["overloaded"] = True  # RecordMetrics labels it, so shedding shows on the dashboard
+            response = JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "overloaded: try again shortly"},
+                headers={"Retry-After": "1"},
+            )
+            await response(scope, receive, send)
+            return
+        self.in_flight += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.in_flight -= 1
+
+
+# Outermost first: SecurityHeaders -> RecordMetrics -> ShedLoad -> the app. (Starlette makes the
+# middleware added last the outermost.) Shed requests are still timed, counted and get headers.
+app.add_middleware(ShedLoad, limit=settings.api_max_in_flight)
 app.add_middleware(RecordMetrics)
-app.add_middleware(SecurityHeaders)  # added last, so it's the outer one
+app.add_middleware(SecurityHeaders)
 
 
 @app.get("/metrics", include_in_schema=False)

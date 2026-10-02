@@ -12,7 +12,7 @@ tests:
     input_series:
       - series: feed_fanout_post_to_feed_seconds_count
         values: 0+100x90
-      - series: feed_fanout_post_to_feed_seconds_bucket{le="5"}
+      - series: feed_fanout_post_to_feed_seconds_bucket{le="2.0"}
         values: 0+50x90
     alert_rule_test:
       - eval_time: 80m
@@ -22,14 +22,14 @@ tests:
               severity: page
             exp_annotations:
               summary: Posts are reaching feeds too slowly
-              description: More than 14.4% of posts took over 5s to reach followers' feeds, over both the last 5 minutes and the last hour. The 99%-within-5s SLO is burning its error budget fast. Check consumer lag, fanout duration, and the outbox.
+              description: More than 14.4% of posts took over 2s to reach followers' feeds, over both the last 5 minutes and the last hour. The 99%-within-2s SLO is burning its error budget fast. Check consumer lag, fanout duration, and the outbox.
 
   # ...but not when (almost) every post is on time.
   - interval: 1m
     input_series:
       - series: feed_fanout_post_to_feed_seconds_count
         values: 0+100x90
-      - series: feed_fanout_post_to_feed_seconds_bucket{le="5"}
+      - series: feed_fanout_post_to_feed_seconds_bucket{le="2.0"}
         values: 0+99x90
     alert_rule_test:
       - eval_time: 80m
@@ -43,7 +43,7 @@ tests:
     input_series:
       - series: feed_fanout_post_to_feed_seconds_count
         values: 0+100x90
-      - series: feed_fanout_post_to_feed_seconds_bucket{le="5"}
+      - series: feed_fanout_post_to_feed_seconds_bucket{le="2.0"}
         values: 0+100x80 8010+10x4 8150+100x4
     promql_expr_test:
       # The short window alone would fire (1 = true)...
