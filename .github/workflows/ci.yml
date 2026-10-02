@@ -38,9 +38,9 @@ jobs:
       - name: Alert rules (promtool)
         run: |
           docker run --rm -v "$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool \
-            prom/prometheus:v3.14.0 check config prometheus.yml
+            prom/prometheus:v3.15.0 check config prometheus.yml
           docker run --rm -v "$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool \
-            prom/prometheus:v3.14.0 test rules rules_test.yml
+            prom/prometheus:v3.15.0 test rules rules_test.yml
       - name: Log pipeline configs (Loki, Alloy)
         run: |
           docker run --rm -v "$PWD/observability/loki:/etc/loki:ro" grafana/loki:3.7.8 \

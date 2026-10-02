@@ -75,8 +75,8 @@ lint:        ## Lint, formatting and types
 	uv run ruff check . && uv run ruff format --check . && uv run mypy feed_fanout tests
 
 rules:       ## Validate the observability configs (Prometheus, Loki, Alloy) and unit-test the alert rules
-	docker run --rm -v "$$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool prom/prometheus:v3.14.0 check config prometheus.yml
-	docker run --rm -v "$$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool prom/prometheus:v3.14.0 test rules rules_test.yml
+	docker run --rm -v "$$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool prom/prometheus:v3.15.0 check config prometheus.yml
+	docker run --rm -v "$$PWD/observability/prometheus:/cfg:ro" -w /cfg --entrypoint promtool prom/prometheus:v3.15.0 test rules rules_test.yml
 	docker run --rm -v "$$PWD/observability/loki:/etc/loki:ro" grafana/loki:3.7.8 -config.file=/etc/loki/loki.yml -verify-config
 	docker run --rm -v "$$PWD/observability/alloy:/cfg:ro" grafana/alloy:v1.20.1 validate /cfg/config.alloy
 
