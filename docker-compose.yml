@@ -233,7 +233,7 @@ services:
   # http://localhost:9090  (Alerts page: http://localhost:9090/alerts)
   prometheus:
     logging: *default-logging
-    image: prom/prometheus:v3.14.0
+    image: prom/prometheus:v3.15.0
     profiles: [observability]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -300,7 +300,7 @@ services:
   # Dashboards, provisioned from observability/grafana. http://localhost:3000
   grafana:
     logging: *default-logging
-    image: grafana/grafana:13.0.2
+    image: grafana/grafana:13.2.3
     profiles: [observability]
     ports:
       - "127.0.0.1:3000:3000"
