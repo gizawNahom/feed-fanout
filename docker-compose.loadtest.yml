@@ -14,6 +14,12 @@ x-limits:
     resources:
       limits: {cpus: "1", memory: 512M}
 
+# Docker keeps every line a container prints in a file on disk. Without a cap, those files
+# grow for as long as the container lives; Loki is where log history is kept and searched.
+x-logging: &default-logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}   # at most 30 MB per container
+
 services:
   api:
     deploy: *app-limits
@@ -74,6 +80,7 @@ services:
   # The load generator. Capped too, so it can't take CPU from the system under test.
   # Runs inside the compose network and calls the API as http://api:8000.
   k6:
+    logging: *default-logging
     image: grafana/k6:2.3.0
     profiles: [loadtest]
     volumes:

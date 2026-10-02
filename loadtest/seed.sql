@@ -1,5 +1,6 @@
 -- Seeds the load test's data directly in Postgres: users' follow graph and their feed history.
--- Minutes, instead of hours through the API. Replaces everything in the database.
+-- Minutes, instead of hours through the API. Replaces everything in the database. Run it with
+-- the app stopped (loadtest/setup.sh does): it locks the tables it fills until it commits.
 --
 --   psql -v users=100000 -v skew=2.13 -v posts_per_user=5 -f seed.sql   (loadtest/setup.sh runs it)
 --
@@ -10,6 +11,7 @@
 
 BEGIN;
 SET LOCAL synchronous_commit = off;  -- a seed can be redone: don't wait for the disk on commit
+SET LOCAL maintenance_work_mem = '512MB';  -- for building the feed's indexes (step 3)
 
 TRUNCATE feed_items, follows, posts, outbox, posting_buckets;
 
@@ -34,10 +36,23 @@ SELECT gen_random_uuid(), 'u' || lpad(a::text, 6, '0'), 'seeded post ' || n, now
 FROM generate_series(0, :users - 1) AS a, generate_series(1, :posts_per_user) AS n;
 
 -- 3. Feeds: each post in every follower's feed, as the fanout would have put it there.
+-- About 25 million rows, so loaded the way bulk loads should be: without the table's indexes
+-- and foreign key, which are then built once, from sorted data. Inserting into them row by
+-- row, with indexes far bigger than the database's memory, took ~50 minutes in the first run.
+-- The names are the ones the migrations created, so the schema ends up exactly as before.
+ALTER TABLE feed_items DROP CONSTRAINT feed_items_post_id_fkey;
+ALTER TABLE feed_items DROP CONSTRAINT feed_items_pkey;
+DROP INDEX ix_feed_items_user_id_created_at;
+
 INSERT INTO feed_items (user_id, post_id, created_at)
 SELECT f.follower_id, p.id, p.created_at
 FROM posts p
 JOIN follows f ON f.followee_id = p.author_id;
+
+ALTER TABLE feed_items ADD CONSTRAINT feed_items_pkey PRIMARY KEY (user_id, post_id);
+CREATE INDEX ix_feed_items_user_id_created_at ON feed_items (user_id, created_at, post_id);
+ALTER TABLE feed_items ADD CONSTRAINT feed_items_post_id_fkey
+    FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE;
 
 COMMIT;
 

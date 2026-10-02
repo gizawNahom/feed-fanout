@@ -22,6 +22,12 @@ x-pgbackrest-env: &pgbackrest-env
   #   PGBACKREST_REPO1_TYPE=s3, PGBACKREST_REPO1_S3_BUCKET, PGBACKREST_REPO1_S3_ENDPOINT,
   #   PGBACKREST_REPO1_S3_REGION, PGBACKREST_REPO1_S3_KEY, PGBACKREST_REPO1_S3_KEY_SECRET
 
+# Docker keeps every line a container prints in a file on disk. Without a cap, those files
+# grow for as long as the container lives; Loki is where log history is kept and searched.
+x-logging: &default-logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}   # at most 30 MB per container
+
 services:
   postgres:
     build: backup/
@@ -43,6 +49,7 @@ services:
   # Takes the scheduled full backups. Runs next to the database: it reads the data directory
   # and talks to Postgres through its Unix socket, both shared by volume.
   backup:
+    logging: *default-logging
     image: feed-fanout-postgres:local
     command: ["backup-scheduler"]
     user: postgres
@@ -68,6 +75,7 @@ services:
   # The backups' state for Prometheus: age of the newest full backup, repository status.
   # Only with the observability profile too: make up-backup, plus --profile observability.
   pgbackrest-exporter:
+    logging: *default-logging
     image: woblerr/pgbackrest_exporter:v0.24.0
     profiles: [observability]
     # Never as root: the image's entrypoint would then chown the repository to its own user,

@@ -27,12 +27,20 @@ done
 
 mkdir -p loadtest/results  # made by you, so k6 (running as you) can write into it
 
-echo "=== starting the stack (with its resource limits and observability)"
-"${C[@]}" up -d --build --wait --wait-timeout 300
+# Data first, then the app: the seed locks the tables it fills until it commits, and anything
+# running meanwhile (the relay polling the outbox, say) would just wait on it.
+echo "=== starting Postgres and creating the schema"
+"${C[@]}" build
+"${C[@]}" stop api relay worker 2>/dev/null || true  # if this is a rerun
+"${C[@]}" up -d --wait postgres
+"${C[@]}" run --rm migrate
 
-echo "=== seeding $USERS users (follow graph skew $SKEW, $POSTS_PER_USER posts each): a few minutes"
+echo "=== seeding $USERS users (follow graph skew $SKEW, $POSTS_PER_USER posts each)"
 "${C[@]}" exec -T postgres psql -U feed -d feed -v ON_ERROR_STOP=1 \
     -v users="$USERS" -v skew="$SKEW" -v posts_per_user="$POSTS_PER_USER" < loadtest/seed.sql
+
+echo "=== starting everything else (with its resource limits and observability)"
+"${C[@]}" up -d --wait --wait-timeout 300
 
 echo "=== access tokens for every ${EVERY}th user"
 "${C[@]}" run --rm --no-deps -T dev-keys \

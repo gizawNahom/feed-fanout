@@ -7,7 +7,7 @@ measures; it doesn't extrapolate. The numbers belong to this resource budget on 
 
 ```bash
 make down              # the load test needs the same ports as the dev stack
-make loadtest-setup    # start (with resource limits), seed 100,000 users, make tokens: ~10 min
+make loadtest-setup    # Postgres, seed 100,000 users, then the rest of the stack; tokens
 make loadtest          # warm-up + 5 steps of 3 min, with pauses: ~21 min
 make loadtest-down     # stop, delete its data (~5 GB)
 ```
@@ -34,8 +34,9 @@ sustainable, run higher ones: the point is to find where it stops.
 - 100,000 users who each follow 10 to 90 others. Popular accounts are picked far more
   often, so follower counts follow a power law: the median user has ~35 followers, the top
   account ~20,000. Those are the posts where fanout-on-write is expensive.
-- 5 posts per user over 30 days, already in every follower's feed: ~20 million feed rows,
-  about 5 GB. That's several times Postgres's memory limit (1.5 GB) on purpose, so feed reads hit
+- 5 posts per user over 30 days, already in every follower's feed: ~25 million feed rows,
+  about 5 GB. Loaded without the feed's indexes, which are built once at the end: inserting
+  into them row by row took ~50 minutes in the first run. That's several times Postgres's memory limit (1.5 GB) on purpose, so feed reads hit
   the disk the way they do at scale, instead of being served entirely from memory.
 
 **Traffic** (`feed.js`, k6): requests arrive at a fixed rate per second, whatever the

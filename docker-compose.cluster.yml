@@ -45,6 +45,12 @@ x-kafka-healthcheck: &kafka-healthcheck
 
 x-bootstrap: &bootstrap kafka:29092,kafka-2:29092,kafka-3:29092
 
+# Docker keeps every line a container prints in a file on disk. Without a cap, those files
+# grow for as long as the container lives; Loki is where log history is kept and searched.
+x-logging: &default-logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}   # at most 30 MB per container
+
 services:
   kafka:
     environment:
@@ -53,6 +59,7 @@ services:
       KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://kafka:29092
 
   kafka-2:
+    logging: *default-logging
     image: apache/kafka:4.3.1
     ports:
       - "127.0.0.1:9094:9092"
@@ -65,6 +72,7 @@ services:
     healthcheck: *kafka-healthcheck
 
   kafka-3:
+    logging: *default-logging
     image: apache/kafka:4.3.1
     ports:
       - "127.0.0.1:9096:9092"

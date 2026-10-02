@@ -379,7 +379,7 @@ sum by (service) (count_over_time({project="feed-fanout"}[5m])) # log volume per
 ```
 
 - **Few labels, by design:** streams are labelled only by `service`, `container`, `project`, and `level`. Loki is fast because it indexes little; `post_id` stays in the line and is filtered at query time with `| json`. A `post_id` label would create a stream per post and grind Loki down, the same cardinality rule as for metrics.
-- **3-day retention**, so a laptop's disk doesn't fill up.
+- **3-day retention**, so a laptop's disk doesn't fill up. Docker's own copy of each container's output is capped too (3 files of 10 MB), so it can't grow without bound either: Loki is where history lives.
 - **Alloy reads the Docker socket** (read-only) to find containers: normal for local development. In production, logs come from the platform's agent instead (e.g. a Kubernetes DaemonSet reading node log files).
 
 ### Health checks
