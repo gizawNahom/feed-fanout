@@ -60,10 +60,12 @@ services:
     deploy:
       resources:
         limits: {cpus: "0.5", memory: 512M}
+  # Idle unless someone's looking, but a dashboard over a whole run needs real CPU: at 0.25 of a
+  # core it could barely render one after the first run.
   grafana:
     deploy:
       resources:
-        limits: {cpus: "0.25", memory: 256M}
+        limits: {cpus: "1", memory: 512M}
   loki:
     deploy:
       resources:

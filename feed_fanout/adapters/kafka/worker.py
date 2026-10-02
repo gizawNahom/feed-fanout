@@ -108,7 +108,6 @@ class FanoutWorker:
         self._stopping = threading.Event()
         self._subscribed = False
         self._assigned_partitions = 0
-        self._lag_updated_at = 0.0
 
     def stop(self) -> None:
         """Ask the worker to exit after the current event. Safe to call from a signal handler."""
@@ -173,23 +172,6 @@ class FanoutWorker:
         self._commit(msg)
         return outcome
 
-    def update_lag(self, every: float = 5.0) -> None:
-        """Consumer lag per owned partition: the newest offset minus our position.
-
-        Uses the watermarks librdkafka caches from its fetches (no extra broker calls), and
-        runs at most once every `every` seconds.
-        """
-        now = time.monotonic()
-        if now - self._lag_updated_at < every:
-            return
-        self._lag_updated_at = now
-        metrics.CONSUMER_LAG.clear()  # drop partitions we no longer own
-        for tp in self.consumer.assignment():
-            _, high = self.consumer.get_watermark_offsets(tp, cached=True)
-            [position] = self.consumer.position([tp])
-            if high >= 0 and position.offset >= 0:
-                metrics.CONSUMER_LAG.labels(partition=str(tp.partition)).set(max(high - position.offset, 0))
-
     def _commit(self, msg: Message) -> None:
         try:
             self.consumer.commit(message=msg, asynchronous=False)
@@ -231,7 +213,6 @@ class FanoutWorker:
             while not self._stopping.is_set():
                 self.heartbeat.beat("consuming")
                 self._assigned_partitions = len(self.consumer.assignment())
-                self.update_lag()
                 msg = self.consumer.poll(0.5)
                 if msg is None:
                     continue

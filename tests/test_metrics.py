@@ -120,18 +120,6 @@ def test_retries_are_counted_by_kind(client: TestClient, worker: Worker, monkeyp
     assert transient() == 2
 
 
-def test_consumer_lag(worker: Worker, kafka_bootstrap: str, topic: str) -> None:
-    # Three events on one partition (same key); the worker handles the first.
-    for _ in range(3):
-        produce_raw(kafka_bootstrap, topic, key="alice", value=b"garbage")
-    worker.process_next()
-
-    worker.fanout.update_lag(every=0)
-
-    lag = sum(s.value for m in REGISTRY.collect() if m.name == "feed_fanout_worker_consumer_lag" for s in m.samples)
-    assert lag == 2  # newest offset 3, our position 1: two events still to handle
-
-
 # --- Relay ------------------------------------------------------------------------
 
 

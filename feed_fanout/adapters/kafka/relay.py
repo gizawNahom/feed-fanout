@@ -28,6 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from feed_fanout import metrics
+from feed_fanout.adapters.kafka.lag import ConsumerGroupLagCollector
 from feed_fanout.adapters.kafka.producers import close_producer, make_producer
 from feed_fanout.adapters.postgres.db import SessionLocal
 from feed_fanout.adapters.postgres.models import OutboxEvent
@@ -194,12 +195,18 @@ def main() -> None:
     relay = OutboxRelay(SessionLocal, make_producer(settings.kafka_bootstrap_servers))
     install_signal_handlers(relay.stop)
     REGISTRY.register(OutboxCollector(SessionLocal))
+    # The backlog after Kafka too: the fanout workers' lag, measured from outside them.
+    lag = ConsumerGroupLagCollector(
+        settings.kafka_bootstrap_servers, settings.fanout_group_id, settings.post_created_topic
+    )
+    REGISTRY.register(lag)
     health = start_health_server(relay, settings.relay_health_port)
     try:
         relay.run()
     finally:
         if health:
             health.stop()
+        lag.close()
 
 
 if __name__ == "__main__":

@@ -346,7 +346,7 @@ make up-observability     # = docker compose --profile observability up -d --bui
 | `feed_fanout_http_requests_total`, `…_request_duration_seconds` | API traffic, errors and latency per route |
 | `feed_fanout_worker_events_total{outcome}` | Fanned out, dead-lettered, or abandoned |
 | `feed_fanout_worker_fanout_duration_seconds`, `…_feed_rows_written` | Cost of each fanout; the tail of rows-per-post is where celebrities show up |
-| `feed_fanout_worker_consumer_lag{partition}` | Are the workers keeping up? |
+| `feed_fanout_consumer_group_lag{partition}` | Are the workers keeping up? Measured from the broker (by the relay), not by the workers themselves: a worker stuck on one slow event can't report its own lag, but stops committing, so this still grows |
 | `feed_fanout_outbox_backlog`, `…_oldest_age_seconds` | Is publishing keeping up? The oldest event's age matters more than the count |
 | `feed_fanout_worker_retries_total{kind}`, `feed_fanout_dead_letters_total{reason}` | Problems that would otherwise be quiet |
 

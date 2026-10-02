@@ -113,9 +113,9 @@ def read_server(step: Step) -> None:
         f" / sum(increase(feed_fanout_http_requests_total[{w}]))",
         step.end,
     )
-    q["lag_start"] = prometheus("sum(feed_fanout_worker_consumer_lag)", step.start)
-    q["lag_end"] = prometheus("sum(feed_fanout_worker_consumer_lag)", step.end)
-    q["lag_max"] = prometheus(f"max_over_time(sum(feed_fanout_worker_consumer_lag)[{w}:5s])", step.end)
+    q["lag_start"] = prometheus("sum(feed_fanout_consumer_group_lag)", step.start)
+    q["lag_end"] = prometheus("sum(feed_fanout_consumer_group_lag)", step.end)
+    q["lag_max"] = prometheus(f"max_over_time(sum(feed_fanout_consumer_group_lag)[{w}:5s])", step.end)
     q["outbox_age_max"] = prometheus(f"max_over_time(max(feed_fanout_outbox_oldest_age_seconds)[{w}:5s])", step.end)
 
 
@@ -185,7 +185,7 @@ def judge(steps: list[Step]) -> None:
 
 
 # The top finite bucket of each histogram: a percentile at or above it only means "at least".
-LATENCY_TOP = 10.0  # HTTP and fanout durations (feed_fanout/metrics.py _LATENCY)
+LATENCY_TOP = 60.0  # HTTP and fanout durations (feed_fanout/metrics.py _LATENCY)
 POST_TO_FEED_TOP = 300.0
 
 
@@ -258,7 +258,7 @@ def report(run: Path, steps: list[Step]) -> str:
         "- **Sent** is what k6 sent per second; **Served** is what the API answered, as it counted them.",
         "  The gap is requests that never got an answer the server could count (refused, or cut off).",
         "- Percentiles come from histogram buckets, so they're interpolated within a bucket, not exact;",
-        '  "> 10 s" means at or past the top bucket (10 s for latencies, 300 s for post→feed).',
+        '  "> 60 s" means at or past the top bucket (60 s for latencies, 300 s for post→feed).',
         "- CPU is % of one core (200% = two cores).",
     ]
     return "\n".join(lines) + "\n"

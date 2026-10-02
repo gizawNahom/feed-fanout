@@ -87,9 +87,9 @@ Limits are caps, not reservations: a service uses what it needs, up to its limit
 | Postgres | 2 | 1.5 GB |
 | Kafka (1 broker, 512 MB heap) | 1 | 1 GB |
 | k6 | 1 | 1 GB |
-| Prometheus, Grafana, Loki, Alloy, exporter | 1.75 in total | 1.6 GB in total |
+| Prometheus, Grafana, Loki, Alloy, exporter | 2.5 in total | 1.9 GB in total |
 
-About 6 GB in the worst case, on a WSL with 7.6 GB; the expected peak is 4 to 5 GB. Kafka UI and
+About 6.4 GB in the worst case, on a WSL with 7.6 GB; the expected peak is 4 to 5 GB. Kafka UI and
 Adminer aren't started.
 
 ## Limits of this test

@@ -81,12 +81,12 @@ tests:
               summary: Posts are not being published to Kafka
               description: An outbox event has been waiting over a minute while the relay is running, so Kafka is refusing or failing writes (e.g. too few brokers in sync). If the relay itself is down, these gauges vanish with it and TargetDown fires instead.
 
-  # Lag summed across partitions (and workers) must stay high for 5 minutes.
+  # Lag summed across partitions must stay high for 5 minutes.
   - interval: 1m
     input_series:
-      - series: feed_fanout_worker_consumer_lag{job="worker", instance="w1:8001", partition="0"}
+      - series: feed_fanout_consumer_group_lag{job="relay", instance="relay:8002", partition="0"}
         values: 600x10
-      - series: feed_fanout_worker_consumer_lag{job="worker", instance="w2:8001", partition="1"}
+      - series: feed_fanout_consumer_group_lag{job="relay", instance="relay:8002", partition="1"}
         values: 600x10
     alert_rule_test:
       - eval_time: 3m
@@ -99,7 +99,7 @@ tests:
               severity: page
             exp_annotations:
               summary: Fanout workers are falling behind
-              description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity) or a database problem.
+              description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity), a stuck worker, or a database problem.
 
   - interval: 1m
     input_series:

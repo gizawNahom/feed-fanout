@@ -7,10 +7,12 @@ user_id or post_id: every distinct label value is a separate time series, and a 
 users would take Prometheus down. Per-post detail belongs in the logs.
 """
 
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import Counter, Histogram
 
 # Latency buckets in seconds, from fast lookups to "something is badly wrong".
-_LATENCY = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10)
+# Up to 60 s: under overload, requests wait well past 10 s, and a percentile beyond the top
+# bucket only says "at least that much" (the first load test's p99 read as a flat "10 s").
+_LATENCY = (0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60)
 
 # --- API --------------------------------------------------------------------------
 
@@ -58,11 +60,8 @@ DEAD_LETTERS = Counter(
     "Events moved to the dead-letter topic, by reason.",
     ["reason"],
 )
-CONSUMER_LAG = Gauge(
-    "feed_fanout_worker_consumer_lag",
-    "Messages not yet consumed, per partition this worker owns.",
-    ["partition"],
-)
+# Consumer lag is measured from outside the workers, as the broker sees it: see
+# feed_fanout/adapters/kafka/lag.py (collected in the relay process).
 
 # --- Relay ------------------------------------------------------------------------
 

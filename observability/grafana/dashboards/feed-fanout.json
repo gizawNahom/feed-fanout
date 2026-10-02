@@ -461,7 +461,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "Consumer lag by partition",
-      "description": "Events waiting to be handled. Growing = workers can't keep up.",
+      "description": "Events the workers haven't committed yet, as the broker sees it. Growing = workers can't keep up, or are stuck. (Measured from outside the workers, so a stuck worker shows here too.)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -497,7 +497,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (partition) (feed_fanout_worker_consumer_lag)",
+          "expr": "sum by (partition) (feed_fanout_consumer_group_lag)",
           "legendFormat": "partition {{partition}}",
           "refId": "A"
         }

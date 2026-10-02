@@ -14,6 +14,7 @@ from prometheus_client import REGISTRY
 from sqlalchemy.orm import Session, sessionmaker
 
 import feed_fanout.metrics  # noqa: F401  (registers the app's metrics)
+from feed_fanout.adapters.kafka.lag import ConsumerGroupLagCollector
 from feed_fanout.adapters.kafka.relay import OutboxCollector
 
 OBSERVABILITY = Path(__file__).parent.parent / "observability"
@@ -32,15 +33,17 @@ _SUFFIXES = {
 
 
 @pytest.fixture
-def known_names(session_factory: sessionmaker[Session]) -> set[str]:
+def known_names(session_factory: sessionmaker[Session], kafka_bootstrap: str) -> set[str]:
     """Every queryable name the app exposes.
 
     Taken from the registered metric families, not from samples: a labelled metric has no
     samples until it's first used (e.g. no dead letters yet), but it's still defined. The
-    outbox gauges come from the relay's collector, which is only registered in the relay
-    process, so it's collected here directly.
+    outbox gauges and the consumer group lag come from the relay's collectors, which are only
+    registered in the relay process, so they're read here directly.
     """
-    families = [*REGISTRY.collect(), *OutboxCollector(session_factory).collect()]
+    lag = ConsumerGroupLagCollector(kafka_bootstrap, "contract-test", "unused")
+    families = [*REGISTRY.collect(), *OutboxCollector(session_factory).collect(), *lag.describe()]
+    lag.close()
     return {f.name + suffix for f in families for suffix in _SUFFIXES.get(f.type, [""])}
 
 

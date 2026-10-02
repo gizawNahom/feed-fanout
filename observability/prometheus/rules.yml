@@ -46,13 +46,14 @@ groups:
   - name: pipeline
     rules:
       - alert: ConsumerLagHigh
-        expr: sum(feed_fanout_worker_consumer_lag) > 1000
+        # Measured from the broker (the relay reports it), so a stuck or dead worker counts too.
+        expr: sum(feed_fanout_consumer_group_lag) > 1000
         for: 5m
         labels:
           severity: page
         annotations:
           summary: Fanout workers are falling behind
-          description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity) or a database problem.
+          description: More than 1000 events have been waiting for 5 minutes. Scale workers, or look for a slow fanout (a celebrity), a stuck worker, or a database problem.
 
       # The outbox gauges are computed by the relay, so this detects a stuck publish path
       # while the relay is up. A relay that's down is caught by TargetDown{job="relay"}.
