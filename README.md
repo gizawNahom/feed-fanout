@@ -195,7 +195,7 @@ Every post fans out to all of the author's followers, so one runaway client (or 
 
 ### Overload protection
 
-Past its capacity, the API answers new requests at once with `503 Service Unavailable` and `Retry-After: 1`, instead of queuing them. The cap is the number of requests in flight (`API_MAX_IN_FLIGHT`, default 100).
+Past its capacity, the API answers new requests at once with `503 Service Unavailable` and `Retry-After: 1`, instead of queuing them. The cap is the number of requests in flight (`API_MAX_IN_FLIGHT`, default 30): about what one API process really works on at once. Admitting more only builds a queue inside the API (at 100, admitted requests waited up to 2.5 s under overload).
 
 - **Why:** in the [first load test](docs/performance/2026-09-30-baseline/README.md), past capacity, requests piled up (in flight = arrival rate × time each takes, Little's law), connections with them, until the process ran out of file descriptors and couldn't even reach its database. It served *less* the harder it was pushed. Turning the excess away cheaply keeps it serving at capacity; clients retry.
 - **Health checks and `/metrics` are never turned away,** so probes and Prometheus can still see an overloaded API.
@@ -280,7 +280,7 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `ENVIRONMENT` | `production`. `dev` allows the local database default and the dev signing key; nothing else does |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` | how to verify access tokens (see [Authentication](#authentication)) |
 | `POSTS_BURST`, `POSTS_PER_MINUTE` | `10`, `10`: each user's [posting limit](#posting-limits) |
-| `API_MAX_IN_FLIGHT` | `100`: requests the API handles at once; beyond, an immediate 503 ([overload protection](#overload-protection)) |
+| `API_MAX_IN_FLIGHT` | `30`: requests the API handles at once; beyond, an immediate 503 ([overload protection](#overload-protection)) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
 | `RELAY_HEALTH_PORT` | `8002` (`0` disables) |
 
@@ -377,7 +377,8 @@ Every process logs through [structlog](https://www.structlog.org/): fields are k
 ```
 
 - **Follow one post across processes:** filter on `post_id` instead of grepping text. The worker binds the event's `post_id`, `author_id`, `partition`, and `offset` once per message, so *every* line while handling it (retries, dead-lettering) carries them automatically, and they're unbound afterwards so they never leak into the next message's lines.
-- **One format per process:** uvicorn's access logs and other libraries' logs go through the same pipeline.
+- **One format per process:** uvicorn's and other libraries' logs go through the same pipeline.
+- **No access log** (one line per HTTP request) in the containers: formatting one per request cost the API real CPU under load, and the metrics already count every request by route, status and latency. Running uvicorn by hand (`uv run uvicorn ...`) keeps it, for debugging.
 - **Exceptions are one structured field** (`exception: [{exc_type, exc_value, frames…}]`), not a multi-line traceback that log collectors split into separate entries.
 
 **Centralized in Loki** (with `make up-observability`). [Grafana Alloy](https://grafana.com/docs/alloy/) discovers the containers and ships their stdout to [Loki](https://grafana.com/oss/loki/); the apps know nothing about it. The same Grafana shows metrics and logs, and the dashboard's **Logs** row has a `post_id` box: paste an id and see every line about that post from the API and the workers, including containers that have since been replaced. Or query in Grafana's Explore:

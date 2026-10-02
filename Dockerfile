@@ -1,5 +1,5 @@
 # One image for every process; docker-compose.yml picks the command:
-#   api     uvicorn feed_fanout.adapters.http:app --host 0.0.0.0
+#   api     uvicorn feed_fanout.adapters.http:app --host 0.0.0.0 --no-access-log
 #   worker  python -m feed_fanout.adapters.kafka.worker
 #   relay   python -m feed_fanout.adapters.kafka.relay
 #   migrate alembic upgrade head
@@ -45,4 +45,9 @@ USER app
 
 # Exec form (no shell), so the process is PID 1 and receives SIGTERM directly:
 # docker stop triggers the graceful shutdown instead of a kill after the timeout.
-CMD ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# --no-access-log: no log line per HTTP request. Formatting one for every request cost CPU in
+# the API's single process (under overload, for every request it turned away, too); metrics
+# already count every request by route, status and latency, the app logs what happens (posts,
+# follows, rejected tokens), and in production per-request logs come from the load balancer.
+CMD ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

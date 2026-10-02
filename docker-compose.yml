@@ -163,7 +163,8 @@ services:
   api:
     logging: *default-logging
     <<: *app
-    command: ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000"]
+    # --no-access-log: no log line per request (see the Dockerfile).
+    command: ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports:
       - "127.0.0.1:8000:8000"
     environment:

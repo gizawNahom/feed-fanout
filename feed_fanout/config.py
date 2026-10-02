@@ -14,7 +14,7 @@ Settings, read from environment variables (or a .env file), with local-developme
     AUTH_DEV_PUBLIC_KEY_FILE  a local public key, accepted ONLY when ENVIRONMENT=dev
     POSTS_BURST               default 10   posts a user can make in a row...
     POSTS_PER_MINUTE          default 10   ...then this many a minute (429 beyond that)
-    API_MAX_IN_FLIGHT         default 100  requests the API handles at once; beyond, 503 at once
+    API_MAX_IN_FLIGHT         default 30   requests the API handles at once; beyond, 503 at once
     WORKER_HEALTH_PORT        default 8001  (0 disables; GET /health/live, /health/ready)
     RELAY_HEALTH_PORT         default 8002  (0 disables)
 
@@ -55,10 +55,12 @@ class Settings(BaseSettings):
     posts_burst: PositiveInt = DEFAULT_POSTING_LIMIT.burst
     posts_per_minute: PositiveFloat = timedelta(minutes=1) / DEFAULT_POSTING_LIMIT.every
 
-    # Overload protection (see ShedLoad in adapters/http.py). In flight = arrival rate x time per
-    # request (Little's law): at ~300 requests/s per core, 100 in flight is at most ~0.3 s of
-    # queuing, and far below the file descriptors that ran out in the first load test.
-    api_max_in_flight: PositiveInt = 100
+    # Overload protection (see ShedLoad in adapters/http.py): about what one API process really
+    # works on at once (40 worker threads, ~15 database connections). Admitting more doesn't add
+    # throughput, only a queue inside the API: at 100, admitted requests waited up to 2.5 s under
+    # overload. In flight = rate x time per request (Little's law): normal traffic, 100/s at
+    # ~17 ms, is ~2 in flight, so 30 only bites under real overload.
+    api_max_in_flight: PositiveInt = 30
 
     @model_validator(mode="after")
     def fill_dev_defaults(self) -> "Settings":
