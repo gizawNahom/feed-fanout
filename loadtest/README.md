@@ -56,6 +56,29 @@ each, so a 429 would be a finding in itself (counted separately, not as a failur
 400, 800/s by default) for 3 minutes, with a 1-minute pause after each for any backlog to
 drain. Container CPU and memory are sampled every 5 s throughout.
 
+## Profiling the API
+
+Where the API's CPU time goes, measured rather than guessed. Run a gentle load in one
+terminal and the profiler in another:
+
+```bash
+RATES=50 STEP=2m make loadtest   # terminal 1: busy, but not overloaded
+make profile-api                 # terminal 2, once the load is running: samples for 60 s
+```
+
+[py-spy](https://github.com/benfred/py-spy) samples the API's stacks 100 times a second from
+a separate, short-lived container that shares its process namespace: nothing is installed in
+the API, and it isn't restarted. Only threads holding Python's GIL are sampled, so the profile
+is CPU work, not waiting for requests or the database.
+
+It writes two files to `loadtest/results/`:
+
+- `profile-<time>.speedscope.json`: drop it on https://www.speedscope.app for an interactive
+  flame graph (the file stays in your browser).
+- `profile-<time>.md` ([`profile_summary.py`](profile_summary.py)): the CPU share per library
+  and per function. *Self* time is where CPU is burned; *total* time includes everything a
+  function calls, so a middleware's total is the cost of everything it wraps.
+
 ## The report
 
 `report.py` combines, for each step:
