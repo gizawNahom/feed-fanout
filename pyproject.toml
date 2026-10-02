@@ -17,6 +17,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "coverage>=7.16",
     "httpx2>=2.13.1",
     "mutmut>=3.8.0",
     "mypy>=2.3.1",
@@ -71,3 +72,16 @@ source_paths = ["feed_fanout/"]
 only_mutate = ["feed_fanout/domain/*", "feed_fanout/application/*"]
 pytest_add_cli_args_test_selection = ["tests/acceptance", "tests/contracts", "tests/unit", "-k", "memory or unit"]
 also_copy = ["tests/"]
+
+[tool.coverage.run]
+source = ["feed_fanout"]
+branch = true
+
+[tool.coverage.report]
+# A floor, enforced in CI: a few points under what the suite reaches, so a PR that adds untested
+# code fails, without making the build flaky. Raise it when coverage rises.
+# Measured at 92% (2026-10-02). What's left is mostly the processes' main() and signal handlers,
+# which the tests run in subprocesses, where coverage doesn't follow.
+fail_under = 90
+show_missing = true
+skip_covered = true

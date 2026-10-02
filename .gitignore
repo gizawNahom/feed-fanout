@@ -12,3 +12,4 @@ loadtest/results/
 *.log
 mutants/
 .mutmut-cache
+.coverage

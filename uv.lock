@@ -581,6 +581,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "coverage" },
     { name = "httpx2" },
     { name = "mutmut" },
     { name = "mypy" },
@@ -605,6 +606,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "coverage", specifier = ">=7.16" },
     { name = "httpx2", specifier = ">=2.13.1" },
     { name = "mutmut", specifier = ">=3.8.0" },
     { name = "mypy", specifier = ">=2.3.1" },

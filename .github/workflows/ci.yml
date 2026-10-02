@@ -80,9 +80,11 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       # Integration tests start real Postgres and Kafka containers via testcontainers,
-      # using the runner's Docker.
+      # using the runner's Docker. Run under coverage, which fails below the floor in pyproject.toml.
       - name: Tests
-        run: uv run pytest
+        run: uv run coverage run -m pytest
+      - name: Coverage floor
+        run: uv run coverage report
 
   e2e:
     name: End-to-end (docker compose)

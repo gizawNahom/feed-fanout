@@ -326,6 +326,7 @@ Written so each behavior is tested **once**, then proven at every level (the ide
 ```bash
 make test-fast    # memory scenarios: milliseconds, no Docker
 make test         # everything (needs Docker)
+make coverage     # all tests under coverage; fails below the floor (90%, measured 92%)
 make mutation     # mutation testing on the core
 ```
 
@@ -433,8 +434,20 @@ Every process answers two probes, the way Docker and Kubernetes expect:
 - **Keyed partitioning across clients.** librdkafka hashes keys with CRC32 by default, while Java clients use murmur2. The producer sets `partitioner: murmur2_random` so a key always maps to the same partition.
 - **Idempotent producer.** `enable.idempotence` prevents the producer's own retries from duplicating or reordering messages.
 
-## Current limitations
+## Production readiness
 
+[docs/production-readiness.md](docs/production-readiness.md) lists what "production ready" means here, claim by claim (behavior, reliability, data, security, capacity, operability), each with its evidence: a test, a CI job, a measurement or a document. Operators have [runbooks](docs/runbooks/) for every paging alert and for restoring the database.
+
+## Known limitations and next steps
+
+What this deliberately doesn't do yet, and why that's acceptable for now:
+
+- **Celebrities still cost a lot to fan out.** A post by an account with ~20,000 followers took over 10 s to write into every feed, holding up its partition meanwhile. One worker per partition limits the damage to a third of posts; the fix is **hybrid fanout**: ordinary authors fanned out on write, very large accounts merged in when a feed is read. It's the main risk to the 2 s SLO.
+- **Excess load is turned away inside the API,** at ~1.8 ms of CPU per refused request. In production, refuse it at the load balancer or reverse proxy, before Python, where it's much cheaper.
+- **Capacity is measured for one API process on one core** (~146 requests/s served under overload). Scaling out is horizontal (more instances behind a load balancer) and not measured here.
+- **Backups are tested against a local repository,** not real object storage. The S3 settings are documented, not exercised.
+- **The Postgres image with pgBackRest isn't vulnerability-scanned in CI** (the app image is).
+- **Monitoring gaps:** counters reset on restart can hide activity until the next scrape; there's no end-to-end test that alerts actually reach someone (routing them is Alertmanager's job, not set up).
 - **Relay ordering is best-effort.** If one event fails to publish while later ones for the same author succeed, or several relays run at once, an author's events can reach Kafka out of order. Harmless here, since feeds are sorted by `created_at` and fanout is idempotent, but a consumer that needed strict per-author order would need a single relay and to stop at the first failure.
 
 ## License

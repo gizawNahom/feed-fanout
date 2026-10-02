@@ -6,7 +6,7 @@ BACKUP := docker compose -f docker-compose.yml -f docker-compose.backup.yml
 ALL := docker compose -f docker-compose.yml -f docker-compose.cluster.yml -f docker-compose.backup.yml
 LOAD := COMPOSE_PROJECT_NAME=feed-fanout-load docker compose -f docker-compose.yml -f docker-compose.loadtest.yml --profile observability --profile loadtest
 
-.PHONY: up up-cluster up-backup up-observability down reset backup restore token logs smoke failover restore-test loadtest-setup loadtest loadtest-down profile-api test test-fast mutation lint rules help
+.PHONY: up up-cluster up-backup up-observability down reset backup restore token logs smoke failover restore-test loadtest-setup loadtest loadtest-down profile-api test test-fast coverage mutation lint rules help
 
 up:          ## Whole stack, single Kafka broker
 	docker compose up -d --build --wait
@@ -61,6 +61,9 @@ profile-api: ## While a load runs: profile the API's CPU for 60 s (py-spy), with
 
 test:        ## All tests (needs Docker)
 	uv run pytest
+
+coverage:    ## All tests under coverage, with the report (fails below the floor in pyproject.toml)
+	uv run coverage run -m pytest && uv run coverage report
 
 test-fast:   ## Acceptance scenarios on the in-memory assembly: milliseconds, no Docker
 	uv run pytest tests/acceptance -k memory -q
