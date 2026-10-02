@@ -184,7 +184,8 @@ or dead worker still shows up as growing lag.
 
 Each is a prediction, to be measured with the same test and appended here.
 
-1. **Most of the 7 ms is per-request overhead, not the queries.** Profile the API under a
+1. **Most of the 7 ms is per-request overhead, not the queries.** *Confirmed and fixed:
+   [7.3 → 3.3 ms per request](../2026-10-02-api-overhead/README.md).* Profile the API under a
    modest load. Suspects: two HTTP middlewares, synchronous handlers and dependencies each
    hopping to a worker thread, ORM overhead, JSON logging of every request, token verification.
 2. **A concurrency cap and a proper file limit turn the collapse into a plateau:** served stays
