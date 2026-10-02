@@ -7,7 +7,7 @@ Docs: http://localhost:8000/docs
 
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import lru_cache
@@ -22,6 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from feed_fanout import metrics
 from feed_fanout.adapters.auth import InvalidToken, TokenVerifier, build_verifier
@@ -47,44 +49,80 @@ log = get_logger("feed_fanout.adapters.http")
 
 
 @lru_cache
-def get_token_verifier() -> TokenVerifier:
+def token_verifier() -> TokenVerifier:
     return build_verifier(settings)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Fail at startup, not on the first request, if tokens can't be verified.
-    app.dependency_overrides.get(get_token_verifier, get_token_verifier)()
+    override = app.dependency_overrides.get(get_token_verifier)
+    override() if override else token_verifier()
     yield
 
 
 app = FastAPI(title="feed-fanout", lifespan=lifespan)
 
 
-@app.middleware("http")
-async def record_metrics(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+# --- Middleware ----------------------------------------------------------------
+#
+# Plain ASGI middleware, not @app.middleware("http"). That decorator wraps each function in
+# Starlette's BaseHTTPMiddleware, which starts a task group and an in-memory stream for every
+# request just to pass the response through. Profiled under load, that machinery (anyio task
+# groups, streams, locks) was a large share of the API's CPU, more than our own code.
+
+
+class RecordMetrics:
     """Count and time every request, labelled by route *template* (/users/{user_id}/feed),
     never the raw path: /users/bob/feed would create one time series per user."""
-    start = time.perf_counter()
-    status_code = 500  # if the handler raises, the client gets a 500
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        route = request.scope.get("route")
-        template = route.path if isinstance(route, APIRoute) else "unmatched"
-        metrics.HTTP_DURATION.labels(request.method, template).observe(time.perf_counter() - start)
-        metrics.HTTP_REQUESTS.labels(request.method, template, str(status_code)).inc()
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        start = time.perf_counter()
+        status_code = 500  # if the app raises before responding, the client gets a 500
+
+        async def send_and_note_status(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_and_note_status)
+        finally:
+            route = scope.get("route")  # set by the router once it has matched the request
+            template = route.path if isinstance(route, APIRoute) else "unmatched"
+            metrics.HTTP_DURATION.labels(scope["method"], template).observe(time.perf_counter() - start)
+            metrics.HTTP_REQUESTS.labels(scope["method"], template, str(status_code)).inc()
 
 
-@app.middleware("http")
-async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+class SecurityHeaders:
     """Defense in depth: never let a browser guess that a response (say, a post's text in JSON) is
     HTML it should render. Every response, errors included."""
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    return response
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Content-Type-Options"] = "nosniff"
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+app.add_middleware(RecordMetrics)
+app.add_middleware(SecurityHeaders)  # added last, so it's the outer one
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -93,6 +131,11 @@ def prometheus_metrics() -> Response:
 
 
 # --- Wiring: which adapters the use cases get. Tests override these. ------------
+#
+# `async def` on purpose, though nothing here awaits: FastAPI runs every plain `def` dependency
+# in a worker thread, a handoff per dependency per request. These only return an object, so
+# they run on the event loop instead. What does block stays `def` and keeps its thread: the
+# endpoints (they wait on the database), get_session, and current_user (below).
 
 
 def get_session() -> Iterator[Session]:
@@ -101,16 +144,20 @@ def get_session() -> Iterator[Session]:
         yield session
 
 
-def get_unit_of_work() -> UnitOfWorkFactory:
+async def get_unit_of_work() -> UnitOfWorkFactory:
     return lambda: PostgresUnitOfWork(SessionLocal, settings.post_created_topic)
 
 
-def get_clock() -> Clock:
+async def get_clock() -> Clock:
     return SystemClock()
 
 
-def get_posting_limit() -> PostingLimit:
+async def get_posting_limit() -> PostingLimit:
     return settings.posting_limit
+
+
+async def get_token_verifier() -> TokenVerifier:
+    return token_verifier()
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -126,7 +173,11 @@ def current_user(
     verifier: Annotated[TokenVerifier, Depends(get_token_verifier)],
 ) -> str:
     """Who is making the request, from their verified access token. The only source of identity:
-    no user id in bodies or paths, so nobody can even ask to act as someone else."""
+    no user id in bodies or paths, so nobody can even ask to act as someone else.
+
+    A plain `def`, so it runs in a worker thread: verifying a token with a key we haven't seen
+    fetches the provider's keys (JWKS) over the network, and on the event loop that would freeze
+    every request until it returned."""
     if credentials is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "missing bearer token", headers={"WWW-Authenticate": "Bearer"}

@@ -238,9 +238,9 @@ def test_the_api_refuses_to_start_without_a_way_to_verify_tokens(monkeypatch: py
     import feed_fanout.adapters.http as http
 
     monkeypatch.setattr(http, "settings", Settings(environment="production"))  # no JWKS URL configured
-    http.get_token_verifier.cache_clear()
+    http.token_verifier.cache_clear()
     try:
         with pytest.raises(AuthConfigError), TestClient(http.app):
             pass
     finally:
-        http.get_token_verifier.cache_clear()
+        http.token_verifier.cache_clear()

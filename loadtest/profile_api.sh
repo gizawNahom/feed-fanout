@@ -4,6 +4,8 @@
 # py-spy samples the running API's stacks from outside (another container sharing its process
 # namespace): nothing is installed in, or restarted, in the API. Only threads holding Python's
 # GIL are sampled, so the profile is CPU work, not threads waiting for a request or the database.
+# --nonblocking: py-spy normally pauses the process for each sample, which slowed the API enough
+# to distort the load test running alongside (at 50/s, k6 couldn't keep the rate).
 #
 # Run it while a load runs, e.g.  terminal 1: RATES=50 STEP=2m make loadtest
 #                                 terminal 2: make profile-api
@@ -34,7 +36,7 @@ echo "=== profiling $TARGET for ${DURATION}s (${RATE} samples/s)"
 docker run --rm --pid="container:$TARGET" --cap-add SYS_PTRACE -v "$PWD/loadtest/results:/out" \
     python:3.14.7-slim-trixie sh -c "
         pip install --quiet --root-user-action=ignore py-spy==$PY_SPY >/dev/null &&
-        py-spy record --pid 1 --gil --duration $DURATION --rate $RATE \
+        py-spy record --pid 1 --gil --nonblocking --duration $DURATION --rate $RATE \
             --format speedscope --output /out/$name.speedscope.json &&
         chown $(id -u):$(id -g) /out/$name.speedscope.json"
 
