@@ -6,7 +6,7 @@ pushed. This entry is the fix, measured in three runs, plus two bugs those runs 
 
 ## Summary
 
-At 400 requests/s offered, four times what one API process can serve:
+At 400 requests/s offered, far more than one API process can serve:
 
 | | Baseline | Cap 100 | Cap 30 | Final |
 |---|---|---|---|---|

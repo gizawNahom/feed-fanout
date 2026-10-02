@@ -57,7 +57,7 @@ CI jobs below are in [`ci.yml`](../.github/workflows/ci.yml) (every push and pul
 |---|---|
 | Capacity is known, on a stated budget | [Baseline load test](performance/2026-09-30-baseline/README.md): open-model k6 against 100,000 users and 25 million feed rows, each service capped |
 | Where the CPU goes is known, and the biggest cost was fixed | [Profile and fix](performance/2026-10-02-api-overhead/README.md): 7.3 → 3.3 ms of CPU per request |
-| Overload degrades gracefully, without errors | [Overload runs](performance/2026-10-02-overload/README.md): at 4× capacity, 146 requests/s served, the rest turned away with 503, 0 errors; `test_overload.py` |
+| Overload degrades gracefully, without errors | [Overload runs](performance/2026-10-02-overload/README.md): at 400 requests/s offered, 146 requests/s served, the rest turned away with 503, 0 errors; `test_overload.py` |
 | Database connections are reused, not churned | Pool settings (`test_config.py::test_database_connections_are_kept_and_reused`); measured session counts in the overload entry |
 | Posts reach feeds quickly: SLO 99% within 2 s | Measured p99 ~1 s ([performance log](performance/)); burn-rate alert `PostToFeedSLOBurn` |
 

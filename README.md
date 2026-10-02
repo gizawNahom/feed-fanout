@@ -40,7 +40,20 @@ GET /me/feed ───────► API ──► Postgres: feed_items ⨝ pos
 | [v3-service](https://github.com/gizawNahom/feed-fanout/tree/v3-service) | FastAPI + Postgres (posts, follows, feeds) + Alembic migrations + integration tests | A real API; feeds are shared, persistent, and paginated |
 | [v4-reliable](https://github.com/gizawNahom/feed-fanout/tree/v4-reliable) | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown, incremental rebalancing | Never lose or duplicate a post |
 | [v5-ops](https://github.com/gizawNahom/feed-fanout/tree/v5-ops) | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
-| **v6-scale** *(in progress)* | Metrics, load testing, caching, celebrity handling | Measured performance |
+| [v6-prod-ready](https://github.com/gizawNahom/feed-fanout/tree/v6-prod-ready) | Metrics, dashboards and tested alerts, logs in Loki; JWT auth and posting limits; a hexagonal core tested on two assemblies, 100% mutation score; security scanning; backups with tested point-in-time restore; load tests, profiling, overload protection | Measured, safe under load, operable: [claim by claim](docs/production-readiness.md) |
+| *next* | Hybrid fanout for celebrities ([known limitations](#known-limitations-and-next-steps)) | |
+
+### v6 in brief
+
+v6 set out to make "production ready" a claim with evidence behind it. The [readiness checklist](docs/production-readiness.md) maps each claim to a test, a CI job or a measurement; what it doesn't cover is listed under [known limitations](#known-limitations-and-next-steps).
+
+The [performance log](docs/performance/) tells the measured part, one entry per change:
+
+1. **[Baseline](docs/performance/2026-09-30-baseline/README.md):** on a laptop with a fixed budget per service, 100,000 users and 25 million feed rows, the API was the bottleneck (~95 requests/s on one core) and collapsed past it, running out of file descriptors. Fanout held up, except one celebrity post that blocked the only worker for 10+ seconds, and that consumer lag didn't show.
+2. **[Profiling](docs/performance/2026-10-02-api-overhead/README.md):** two thirds of the API's CPU went to framework plumbing (thread handoffs, middleware machinery), not our code. Two small changes: 7.3 → 3.3 ms of CPU per request.
+3. **[Overload](docs/performance/2026-10-02-overload/README.md):** at 400 requests/s offered, far past capacity, from thousands of errors to none: 146 requests/s served, the rest turned away at once with 503, admitted requests answered in under half a second.
+
+Each run also exposed something no test had caught: an SLO alert that could never fire (a histogram label spelled `le="5"` instead of `le="5.0"`), an access-log flag our own logging silently undid, database connections opened and closed thousands of times. All fixed, and the first one now has a test that keeps it fixed.
 
 ## Quick start
 
@@ -119,7 +132,7 @@ An overlay rather than the default: with archiving on and nothing taking backups
 
 How much traffic the system sustains on one machine, and what gives out first: [k6](https://k6.io) at a fixed arrival rate against 100,000 seeded users with a power-law follower graph, every service under a fixed CPU and memory limit. Each step reports latency, the post-to-feed delay, consumer lag and resources, and where the knee is. See [loadtest/README.md](loadtest/README.md).
 
-**Results so far:** the [baseline](docs/performance/2026-09-30-baseline/README.md), before any tuning. It shows a ceiling of ~95 requests/s set by the API alone (one core, ~7 ms of CPU per request), a collapse past it (the API runs out of file descriptors), and fanout-on-write holding up except for one celebrity post that blocked the single worker for 10+ seconds. Then [profiling the API](docs/performance/2026-10-02-api-overhead/README.md) found two thirds of its CPU in framework plumbing (thread handoffs, middleware machinery); two small changes cut CPU per request from 7.3 to 3.3 ms. And [overload](docs/performance/2026-10-02-overload/README.md) no longer collapses it: at 4× its capacity it serves 146 requests/s with no errors, turns the rest away with an immediate 503, and answers what it admits in under half a second.
+**Results so far:** the [baseline](docs/performance/2026-09-30-baseline/README.md), before any tuning. It shows a ceiling of ~95 requests/s set by the API alone (one core, ~7 ms of CPU per request), a collapse past it (the API runs out of file descriptors), and fanout-on-write holding up except for one celebrity post that blocked the single worker for 10+ seconds. Then [profiling the API](docs/performance/2026-10-02-api-overhead/README.md) found two thirds of its CPU in framework plumbing (thread handoffs, middleware machinery); two small changes cut CPU per request from 7.3 to 3.3 ms. And [overload](docs/performance/2026-10-02-overload/README.md) no longer collapses it: at 400 requests/s offered, far past its capacity, it serves 146 requests/s with no errors, turns the rest away with an immediate 503, and answers what it admits in under half a second.
 
 ```bash
 make loadtest-setup && make loadtest && make loadtest-down
