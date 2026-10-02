@@ -446,7 +446,7 @@ What this deliberately doesn't do yet, and why that's acceptable for now:
 - **Excess load is turned away inside the API,** at ~1.8 ms of CPU per refused request. In production, refuse it at the load balancer or reverse proxy, before Python, where it's much cheaper.
 - **Capacity is measured for one API process on one core** (~146 requests/s served under overload). Scaling out is horizontal (more instances behind a load balancer) and not measured here.
 - **Backups are tested against a local repository,** not real object storage. The S3 settings are documented, not exercised.
-- **The Postgres image with pgBackRest isn't vulnerability-scanned in CI** (the app image is).
+- **The Postgres image with pgBackRest isn't vulnerability-scanned in CI** (the app image is). Scanned by hand (2026-10-02), it has 22 fixable HIGH/CRITICAL findings, all in `gosu`'s Go standard library: the official Postgres image uses `gosu` only to switch from root to the postgres user at startup, and they can only be fixed upstream. A blocking scan would keep CI red with nothing to fix here.
 - **Monitoring gaps:** counters reset on restart can hide activity until the next scrape; there's no end-to-end test that alerts actually reach someone (routing them is Alertmanager's job, not set up).
 - **Relay ordering is best-effort.** If one event fails to publish while later ones for the same author succeed, or several relays run at once, an author's events can reach Kafka out of order. Harmless here, since feeds are sorted by `created_at` and fanout is idempotent, but a consumer that needed strict per-author order would need a single relay and to stop at the first failure.
 

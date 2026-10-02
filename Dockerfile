@@ -22,6 +22,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- Runtime: just Python, the virtualenv and the code ------------------------------
 FROM python:3.14.7-slim-trixie
 
+# Debian's security updates, applied at build time. The official image is rebuilt only every so
+# often, so it can lag behind fixes Debian has already published (OpenSSL, in 2026-10: the image
+# scan in CI failed on it). Every build, and so every deploy, gets the patched packages.
+RUN apt-get update \
+    && apt-get upgrade --yes --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 # Run as an unprivileged user, never root. And no pip: the app runs from its virtualenv and
 # never installs anything, and the base image's pip carries its own vulnerable vendored copies
 # (found by the image scan). Less software, less to patch, less for an attacker to use.
