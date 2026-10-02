@@ -280,6 +280,7 @@ All settings come from environment variables (or a `.env` file; see [`.env.examp
 | `ENVIRONMENT` | `production`. `dev` allows the local database default and the dev signing key; nothing else does |
 | `AUTH_JWKS_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` | how to verify access tokens (see [Authentication](#authentication)) |
 | `POSTS_BURST`, `POSTS_PER_MINUTE` | `10`, `10`: each user's [posting limit](#posting-limits) |
+| `DB_POOL_SIZE` | `20`: database connections each process keeps open and reuses (instances × this must stay under Postgres's `max_connections`, 100) |
 | `API_MAX_IN_FLIGHT` | `30`: requests the API handles at once; beyond, an immediate 503 ([overload protection](#overload-protection)) |
 | `WORKER_HEALTH_PORT` | `8001` (`0` disables) |
 | `RELAY_HEALTH_PORT` | `8002` (`0` disables) |

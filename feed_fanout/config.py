@@ -15,6 +15,7 @@ Settings, read from environment variables (or a .env file), with local-developme
     POSTS_BURST               default 10   posts a user can make in a row...
     POSTS_PER_MINUTE          default 10   ...then this many a minute (429 beyond that)
     API_MAX_IN_FLIGHT         default 30   requests the API handles at once; beyond, 503 at once
+    DB_POOL_SIZE              default 20   database connections each process keeps open and reuses
     WORKER_HEALTH_PORT        default 8001  (0 disables; GET /health/live, /health/ready)
     RELAY_HEALTH_PORT         default 8002  (0 disables)
 
@@ -61,6 +62,10 @@ class Settings(BaseSettings):
     # overload. In flight = rate x time per request (Little's law): normal traffic, 100/s at
     # ~17 ms, is ~2 in flight, so 30 only bites under real overload.
     api_max_in_flight: PositiveInt = 30
+    # Per process (see adapters/postgres/db.py). Connections are opened on demand, so a worker
+    # holds 1 or 2; the API up to this. Instances x pool size must stay under Postgres's
+    # max_connections (100 by default).
+    db_pool_size: PositiveInt = 20
 
     @model_validator(mode="after")
     def fill_dev_defaults(self) -> "Settings":

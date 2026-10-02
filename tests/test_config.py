@@ -18,3 +18,13 @@ def test_a_configured_database_url_is_used_as_is() -> None:
     url = "postgresql+psycopg://app@db.internal:5432/feed"
 
     assert Settings(environment="production", database_url=url).database_url == url
+
+
+def test_database_connections_are_kept_and_reused() -> None:
+    # No "overflow" connections: those are closed as soon as they're returned, which churned
+    # under load (thousands of Postgres sessions). Busy means waiting for a pooled one instead.
+    from feed_fanout.adapters.postgres.db import engine
+    from feed_fanout.config import settings
+
+    assert engine.pool.size() == settings.db_pool_size  # type: ignore[attr-defined]
+    assert engine.pool._max_overflow == 0  # type: ignore[attr-defined]

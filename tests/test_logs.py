@@ -89,3 +89,30 @@ def test_every_line_for_an_event_carries_its_ids_and_they_do_not_leak(
     # ...and the next event's lines don't inherit them.
     assert "post_id" not in dead
     assert dead["offset"] == fanned["offset"] + 1
+
+
+@pytest.mark.parametrize(
+    ("uvicorn_state", "logged"),
+    [
+        ({"handlers": [logging.NullHandler()], "propagate": False}, True),  # uvicorn's default: access log on
+        ({"handlers": [], "propagate": False}, False),  # what --no-access-log leaves behind
+    ],
+    ids=["access-log", "no-access-log"],
+)
+def test_uvicorn_access_log_follows_uvicorns_setting(uvicorn_state: dict[str, Any], logged: bool) -> None:
+    access, root = logging.getLogger("uvicorn.access"), logging.getLogger()
+    saved = access.handlers[:], access.propagate, root.handlers[:], root.level
+    access.handlers, access.propagate = uvicorn_state["handlers"], uvicorn_state["propagate"]
+    try:
+        configure_logging("INFO", "json")
+        buffer = io.StringIO()
+        handler = root.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
+        handler.setStream(buffer)
+
+        access.info('127.0.0.1:1234 - "GET /me/feed HTTP/1.1" 200')
+
+        assert bool(buffer.getvalue()) is logged
+    finally:
+        access.handlers, access.propagate, root.handlers, level = saved
+        root.setLevel(level)

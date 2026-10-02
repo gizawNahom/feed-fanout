@@ -66,10 +66,16 @@ def configure_logging(level: str = "INFO", fmt: LogFormat = "auto") -> None:
     root.handlers = [handler]
     root.setLevel(level)
 
-    # uvicorn installs its own handlers; route its logs (incl. access logs) through ours.
+    # uvicorn installs its own handlers; route its logs through ours. Except its access log if
+    # uvicorn was started with --no-access-log: that leaves the logger without handlers and not
+    # propagating, and switching propagation back on here would quietly undo the flag (it did:
+    # the API logged every request through a load test that was meant to run without).
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logging.getLogger(name).handlers = []
-        logging.getLogger(name).propagate = True
+        logger = logging.getLogger(name)
+        if name == "uvicorn.access" and not logger.handlers and not logger.propagate:
+            continue
+        logger.handlers = []
+        logger.propagate = True
 
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
