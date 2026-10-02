@@ -188,7 +188,8 @@ Each is a prediction, to be measured with the same test and appended here.
    [7.3 → 3.3 ms per request](../2026-10-02-api-overhead/README.md).* Profile the API under a
    modest load. Suspects: two HTTP middlewares, synchronous handlers and dependencies each
    hopping to a worker thread, ORM overhead, JSON logging of every request, token verification.
-2. **A concurrency cap and a proper file limit turn the collapse into a plateau:** served stays
+2. **A concurrency cap and a proper file limit turn the collapse into a plateau.** *Confirmed:
+   [no errors, 146/s served at 400 offered](../2026-10-02-overload/README.md).* The prediction: served stays
    near the ceiling at 800/s instead of falling to 70/s, and excess requests get fast `503`s
    instead of 500s and refused connections.
 3. **A celebrity post shouldn't hold up everyone else.** More workers (Kafka has 3 partitions,

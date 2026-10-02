@@ -1,0 +1,172 @@
+{
+    "metrics": {
+        "iterations": {
+            "count": 12001,
+            "rate": 100.00392750613433
+        },
+        "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 2
+        },
+        "data_sent": {
+            "count": 7474654,
+            "rate": 62286.03922585093
+        },
+        "http_req_receiving": {
+            "avg": 0.08761966936088633,
+            "p(50)": 0.076691,
+            "p(95)": 0.156564,
+            "p(99)": 0.197687,
+            "max": 1.523521
+        },
+        "http_req_blocked": {
+            "avg": 0.010506458295142053,
+            "p(50)": 0.006026,
+            "p(95)": 0.009732,
+            "p(99)": 0.050098,
+            "max": 12.503007
+        },
+        "http_req_duration{name:GET /me/feed}": {
+            "avg": 5.6192598419192805,
+            "p(50)": 4.8369295,
+            "p(95)": 8.478159000000002,
+            "p(99)": 16.62623237999998,
+            "max": 120.179999,
+            "thresholds": {
+                "max>=0": false
+            }
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 6.125687730355788,
+            "p(50)": 5.00868,
+            "p(95)": 12.084348,
+            "p(99)": 19.47304,
+            "max": 140.868678
+        },
+        "http_req_duration{name:DELETE /me/following}": {
+            "avg": 6.0083015840708,
+            "p(50)": 4.546959,
+            "p(95)": 13.826624999999993,
+            "p(99)": 19.96776332,
+            "max": 54.70314,
+            "thresholds": {
+                "max>=0": false
+            }
+        },
+        "checks": {
+            "passes": 12001,
+            "fails": 0,
+            "value": 1
+        },
+        "http_req_failed": {
+            "passes": 0,
+            "fails": 12001,
+            "value": 0
+        },
+        "http_req_connecting": {
+            "avg": 0.0030089839180068314,
+            "p(50)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 12.431924
+        },
+        "http_req_duration": {
+            "avg": 6.125687730355788,
+            "p(50)": 5.00868,
+            "p(95)": 12.084348,
+            "p(99)": 19.47304,
+            "max": 140.868678
+        },
+        "http_reqs": {
+            "count": 12001,
+            "rate": 100.00392750613433
+        },
+        "http_req_tls_handshaking": {
+            "avg": 0,
+            "p(50)": 0,
+            "p(95)": 0,
+            "p(99)": 0,
+            "max": 0
+        },
+        "http_req_duration{name:POST /posts}": {
+            "avg": 11.37132737088734,
+            "p(50)": 9.666372,
+            "p(95)": 17.9494821,
+            "p(99)": 29.650219580000062,
+            "max": 140.868678,
+            "thresholds": {
+                "max>=0": false
+            }
+        },
+        "data_received": {
+            "count": 32588563,
+            "rate": 271559.3943655605
+        },
+        "iteration_duration": {
+            "max": 141.297235,
+            "avg": 6.356003805766181,
+            "p(50)": 5.241085,
+            "p(95)": 12.340005,
+            "p(99)": 19.695202
+        },
+        "http_req_duration{name:PUT /me/following}": {
+            "max": 24.447064,
+            "avg": 7.637241832061065,
+            "p(50)": 6.579312,
+            "p(95)": 15.0447715,
+            "p(99)": 19.66019809999997,
+            "thresholds": {
+                "max>=0": false
+            }
+        },
+        "http_req_waiting": {
+            "avg": 6.002657291642394,
+            "p(50)": 4.88476,
+            "p(95)": 11.96935,
+            "p(99)": 19.277937,
+            "max": 140.673989
+        },
+        "vus_max": {
+            "min": 100,
+            "max": 100,
+            "value": 100
+        },
+        "http_req_sending": {
+            "avg": 0.03541076935255388,
+            "p(50)": 0.03015,
+            "p(95)": 0.066536,
+            "p(99)": 0.093192,
+            "max": 1.145614
+        }
+    },
+    "root_group": {
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "feed read": {
+                    "name": "feed read",
+                    "path": "::feed read",
+                    "id": "0fc1769f3aa4908c8f74927418a160e5",
+                    "passes": 10754,
+                    "fails": 0
+                },
+                "post created": {
+                    "name": "post created",
+                    "path": "::post created",
+                    "id": "7d9cba876fa676fab10ef8104406fc4c",
+                    "passes": 1003,
+                    "fails": 0
+                },
+                "follow changed": {
+                    "name": "follow changed",
+                    "path": "::follow changed",
+                    "id": "039c43fb2c9da7221c2cf863a514c909",
+                    "passes": 244,
+                    "fails": 0
+                }
+            },
+        "name": "",
+        "path": ""
+    }
+}
