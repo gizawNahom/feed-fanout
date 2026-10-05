@@ -108,6 +108,10 @@ def read_server(step: Step) -> None:
     q["server_5xx"] = prometheus(
         f'sum(increase(feed_fanout_http_requests_total{{status=~"5.."}}[{w}])) or vector(0)', step.end
     )
+    # Refused by the gateway (Kong's global rate limit, 429) before reaching the API.
+    q["edge_refused"] = prometheus(
+        f'sum(increase(kong_http_requests_total{{source="kong",code="429"}}[{w}])) or vector(0)', step.end
+    )
     q["shed"] = prometheus(
         f'sum(increase(feed_fanout_http_requests_total{{route="overloaded"}}[{w}])) or vector(0)', step.end
     )
@@ -227,15 +231,16 @@ def report(run: Path, steps: list[Step]) -> str:
         "",
         "## Steps",
         "",
-        "| Rate (req/s) | Sent (k6) | Served (server) | Failed (k6) | 5xx | of which shed | Dropped "
-        "| Posts fanned out | Post→feed p50 / p95 / p99 | Lag max (end) | Outbox age max | Sustainable |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Rate (req/s) | Sent (k6) | Served (server) | Failed (k6) | Refused at gateway | 5xx | of which shed "
+        "| Dropped | Posts fanned out | Post→feed p50 / p95 / p99 | Lag max (end) | Outbox age max | Sustainable |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in steps:
         reqs = s.k6.get("http_reqs", {})
         lines.append(
             f"| {s.rate} | {reqs.get('rate', 0):.0f}/s | {num(s.server.get('served_per_second'))}/s "
-            f"| {s.k6.get('http_req_failed', {}).get('value', 0):.2%} | {num(s.server.get('server_5xx'))} "
+            f"| {s.k6.get('http_req_failed', {}).get('value', 0):.2%} | {num(s.server.get('edge_refused'))} "
+            f"| {num(s.server.get('server_5xx'))} "
             f"| {num(s.server.get('shed'))} "
             f"| {s.k6.get('dropped_iterations', {}).get('count', 0):.0f} | {num(s.server.get('posts_fanned_out'))} "
             f"| {sec(s.server.get('post_to_feed_p50'))} / {sec(s.server.get('post_to_feed_p95'))} / "
@@ -260,6 +265,8 @@ def report(run: Path, steps: list[Step]) -> str:
     lines += [
         "",
         "- **Sent** is what k6 sent per second; **Served** is what the API answered, as it counted them.",
+        "- **Refused at gateway** are 429s from Kong's global rate limit: turned away at the edge, before",
+        "  reaching the API. They count as failed for k6.",
         "- **Shed** are 503s from overload protection: requests turned away at once because the API was at",
         "  capacity (they count as failed for k6, and as 5xx). Unlike errors, they're the intended behavior.",
         "  The gap is requests that never got an answer the server could count (refused, or cut off).",

@@ -49,7 +49,8 @@ CI jobs below are in [`ci.yml`](../.github/workflows/ci.yml) (every push and pul
 | One user can't flood everyone's feeds | Posting limit (token bucket, 429 + Retry-After), held under concurrency: `test_posting_limits.py`, `test_posting_buckets.py` |
 | No known vulnerable dependencies or image packages; no committed secrets | pip-audit, Trivy (image, secrets), weekly too (`security.yml`); ruff's security rules (job *Lint*); Dependabot; actions pinned to commit SHAs |
 | Injection and XSS | Bound parameters only (ruff S608); JSON only, `nosniff` on every response (`test_http_headers.py`). See [SECURITY.md](../SECURITY.md) |
-| A small attack surface | Image runs as an unprivileged user, without pip; dev ports bound to 127.0.0.1 |
+| A small attack surface | Image runs as an unprivileged user, without pip; dev ports bound to 127.0.0.1; only the public API is routed through the gateway, `/metrics` stays internal (`scripts/gateway_test.sh`, job *API gateway*) |
+| Abuse at the edge is cut off before the API | Kong refuses oversized bodies (413) and bursts beyond a global rate limit (429, with a retry hint): `scripts/gateway_test.sh` |
 
 ## Capacity
 
@@ -58,6 +59,7 @@ CI jobs below are in [`ci.yml`](../.github/workflows/ci.yml) (every push and pul
 | Capacity is known, on a stated budget | [Baseline load test](performance/2026-09-30-baseline/README.md): open-model k6 against 100,000 users and 25 million feed rows, each service capped |
 | Where the CPU goes is known, and the biggest cost was fixed | [Profile and fix](performance/2026-10-02-api-overhead/README.md): 7.3 → 3.3 ms of CPU per request |
 | Overload degrades gracefully, without errors | [Overload runs](performance/2026-10-02-overload/README.md): at 400 requests/s offered, 146 requests/s served, the rest turned away with 503, 0 errors; `test_overload.py` |
+| Capacity scales out | The gateway balances across API instances and picks up new ones while running (`scripts/gateway_test.sh`: 2 instances; 2 → 3 split 21/19/20). Capacity with 2 instances: next load run |
 | Database connections are reused, not churned | Pool settings (`test_config.py::test_database_connections_are_kept_and_reused`); measured session counts in the overload entry |
 | Posts reach feeds quickly: SLO 99% within 2 s | Measured p99 ~1 s ([performance log](performance/)); burn-rate alert `PostToFeedSLOBurn` |
 

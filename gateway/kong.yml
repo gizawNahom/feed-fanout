@@ -1,0 +1,53 @@
+# Kong, the API gateway: the system's only public entry point. Declarative and database-less:
+# this file is the whole configuration, loaded at startup.
+#
+# What it does, and why here rather than in the API:
+# - Routes only the public API. /metrics stays internal (Prometheus scrapes the API directly).
+# - Balances requests across the API instances: "api" resolves to every instance of the compose
+#   service (docker compose up --scale api=N), and Kong spreads requests across them.
+# - Refuses excess load at the edge: a global rate limit returns 429 before a request reaches
+#   Python, where turning one away costs ~1.8 ms of CPU (docs/performance/2026-10-02-overload).
+#   The API's own overload protection (ShedLoad) stays as the second line.
+# - Rejects oversized bodies (a post is at most 5,000 characters).
+# - Exposes request metrics for Prometheus (status API, port 8100).
+#
+# Not here: token verification. It stays in the API, which follows the identity provider's key
+# rotation (JWKS); open-source Kong's JWT plugin needs keys configured by hand.
+_format_version: "3.0"
+
+services:
+  - name: feed-api
+    host: api
+    port: 8000
+    protocol: http
+    connect_timeout: 5000
+    read_timeout: 30000
+    write_timeout: 30000
+    routes:
+      - name: public-api
+        # The public API, and nothing else: the docs, health checks for probes, posts, feeds.
+        # Kong matches paths by prefix: "/me" would also match "/metrics" (it did, until a test
+        # caught it), so the trailing slashes matter.
+        paths: ["/posts", "/me/", "/health/", "/docs", "/openapi.json"]
+        strip_path: false
+    plugins:
+      - name: rate-limiting
+        config:
+          # A global cap on what reaches the API, across all clients: sized for 2 instances, each
+          # measured at ~146 requests/s under overload. Beyond it, 429 at the edge.
+          second: 250
+          limit_by: service
+          policy: local
+          error_code: 429
+          error_message: "overloaded: try again shortly"
+      - name: request-size-limiting
+        config:
+          allowed_payload_size: 64
+          size_unit: kilobytes
+
+plugins:
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      upstream_health_metrics: true

@@ -12,7 +12,9 @@
 x-limits:
   app: &app-limits
     resources:
-      limits: {cpus: "1", memory: 512M}
+      # One core each; memory twice the measured peak (~120 MB), so 2 instances and the gateway
+      # still fit the laptop's budget.
+      limits: {cpus: "1", memory: 256M}
 
 # Docker keeps every line a container prints in a file on disk. Without a cap, those files
 # grow for as long as the container lives; Loki is where log history is kept and searched.
@@ -21,8 +23,17 @@ x-logging: &default-logging
   options: {max-size: "10m", max-file: "3"}   # at most 30 MB per container
 
 services:
+  # 2 instances behind the gateway, each with the budget one had before: the first load test
+  # showed one process uses at most one core (~146 requests/s served under overload).
   api:
-    deploy: *app-limits
+    deploy:
+      replicas: 2
+      <<: *app-limits
+
+  kong:
+    deploy:
+      resources:
+        limits: {cpus: "1", memory: 512M}
 
   # One worker per partition (the topic has 3), as production would run them: a slow fanout (a
   # celebrity's post) then holds up only its own partition, not every post. Each used ~3% of a

@@ -155,7 +155,13 @@ Access tokens for this setup: `uv run python -m feed_fanout.devtools token alice
 
 ## Architecture
 
-Hexagonal (ports and adapters), kept light: plain Python `Protocol`s and constructors, no framework.
+```
+clients ──▶ Kong (API gateway, :8000) ──▶ API ×N ──▶ Postgres ◀── fanout workers ×3
+                                                        │                ▲
+                                                     outbox ─▶ relay ─▶ Kafka
+```
+
+Inside the service, hexagonal (ports and adapters), kept light: plain Python `Protocol`s and constructors, no framework.
 
 ```
 feed_fanout/
@@ -204,7 +210,21 @@ Every post fans out to all of the author's followers, so one runaway client (or 
 - **A token bucket, kept as one timestamp:** when the user's bucket will be full again. Each post pushes it 6 s further; the bucket is empty when it's a minute ahead of now. No counters to reset, no background refill ([`domain/posting_limit.py`](feed_fanout/domain/posting_limit.py)).
 - **Checked in the same transaction as the post**, with the user's bucket row locked (`SELECT ... FOR UPDATE`). So the limit holds across any number of API instances, a refused post leaves no trace, and an accepted one can't be half-counted. Concurrent posts by the same user take turns; other users aren't affected. A test fires 12 concurrent posts at a bucket with 5 tokens and checks exactly 5 succeed (without the lock, it fails).
 - **In Postgres, not Redis:** it's already there, the check is one row per post, and posting is the low-volume path. A separate store would be worth it for limits on every request, like reads.
-- **Scope:** posting only. Reads and follows are cheap and bounded; a per-IP limit in front of the API (at the load balancer) is the place for coarse abuse protection.
+- **Scope:** posting only. Reads and follows are cheap and bounded; a per-client limit in front of the API (at the [gateway](#api-gateway)) is the place for coarse abuse protection.
+
+### API gateway
+
+Clients reach the API through [Kong](https://docs.konghq.com/gateway/) (open source, database-less: [`gateway/kong.yml`](gateway/kong.yml) is its whole configuration). It's the only public entry point, on port 8000.
+
+- **Routes only the public API.** `/metrics` and anything else stay internal; Prometheus scrapes the API instances directly.
+- **Balances across the API instances.** One Python process uses at most one core, so capacity is horizontal: `docker compose up --scale api=2`. Kong finds the instances through DNS, and picks up new ones within seconds (tested: scaled from 2 to 3 while running, requests split 21/19/20).
+- **Refuses excess load at the edge:** a global rate limit returns `429` with a retry hint, before a request reaches Python, where refusing one costs ~1.8 ms of CPU. The API's own [overload protection](#overload-protection) stays as the second line. Oversized bodies get `413`.
+- **Measured:** Kong's request and latency metrics are in Prometheus, with a *Gateway* row on the dashboard; its access log is the per-request log (the API's is off).
+- **Not at the gateway: token verification.** It stays in the API, which follows the identity provider's key rotation (JWKS); open-source Kong's JWT plugin needs keys configured by hand. With several services, verifying once at the gateway and passing the identity on would be the next step.
+- **Debugging:** each API instance is also reachable directly, on a local port Docker picks from 8010–8019 (`docker compose ps api`), to tell a gateway problem from an API one.
+- **Tested:** `make gateway-test` ([`scripts/gateway_test.sh`](scripts/gateway_test.sh), a CI job): only public routes, balancing across 2 instances, the size limit, the rate limit.
+
+The dev stack runs 1 API instance to stay light; the load test runs 2.
 
 ### Overload protection
 
@@ -213,7 +233,7 @@ Past its capacity, the API answers new requests at once with `503 Service Unavai
 - **Why:** in the [first load test](docs/performance/2026-09-30-baseline/README.md), past capacity, requests piled up (in flight = arrival rate × time each takes, Little's law), connections with them, until the process ran out of file descriptors and couldn't even reach its database. It served *less* the harder it was pushed. Turning the excess away cheaply keeps it serving at capacity; clients retry.
 - **Health checks and `/metrics` are never turned away,** so probes and Prometheus can still see an overloaded API.
 - **Visible:** turned-away requests are counted under the route `overloaded`, and feed the API error-rate alert.
-- **More capacity is horizontal:** one API process uses at most one core (Python's GIL); run more instances behind a load balancer. Likewise, run **one fanout worker per partition** (3) in production, at least 2 for redundancy: a slow fanout (a celebrity's post) then holds up only its own partition. The dev stack runs 1 to stay light; `docker compose up --scale worker=3` runs 3.
+- **More capacity is horizontal:** one API process uses at most one core (Python's GIL); run more instances behind the [gateway](#api-gateway). Likewise, run **one fanout worker per partition** (3) in production, at least 2 for redundancy: a slow fanout (a celebrity's post) then holds up only its own partition. The dev stack runs 1 to stay light; `docker compose up --scale worker=3` runs 3.
 
 ## The outbox
 
@@ -359,7 +379,7 @@ make mutation     # mutation testing on the core
 
 ### Metrics
 
-Every process exposes Prometheus metrics at `/metrics` (API on :8000, worker on :8001, relay on :8002). Prometheus and a provisioned Grafana dashboard run in an optional Compose profile, so the default stack stays light:
+Every process exposes Prometheus metrics at `/metrics` (API instances on their own port, internal; worker on :8001, relay on :8002; the gateway on :8100, internal). Prometheus and a provisioned Grafana dashboard run in an optional Compose profile, so the default stack stays light:
 
 ```bash
 make up-observability     # = docker compose --profile observability up -d --build --wait  (Prometheus, Grafana, Loki, Alloy)
@@ -456,8 +476,10 @@ Every process answers two probes, the way Docker and Kubernetes expect:
 What this deliberately doesn't do yet, and why that's acceptable for now:
 
 - **Celebrities still cost a lot to fan out.** A post by an account with ~20,000 followers took over 10 s to write into every feed, holding up its partition meanwhile. One worker per partition limits the damage to a third of posts; the fix is **hybrid fanout**: ordinary authors fanned out on write, very large accounts merged in when a feed is read. It's the main risk to the 2 s SLO.
-- **Excess load is turned away inside the API,** at ~1.8 ms of CPU per refused request. In production, refuse it at the load balancer or reverse proxy, before Python, where it's much cheaper.
-- **Capacity is measured for one API process on one core** (~146 requests/s served under overload). Scaling out is horizontal (more instances behind a load balancer) and not measured here.
+- **The gateway's rate limit is global and fixed** (250 requests/s in `gateway/kong.yml`, sized for 2 API instances): it protects the API, but doesn't share capacity fairly between clients, and has to be changed by hand when instances are added. Per-client limits would need clients to be identified at the edge (API keys, or verifying tokens there).
+- **Tokens are verified by the API, not the gateway** (open-source Kong can't follow key rotation). With more services, verify once at the gateway.
+- **Capacity with several API instances isn't measured yet.** One instance served ~146 requests/s under overload; a load run through the gateway with 2 instances is next.
+- **One gateway instance.** In production, run at least two, behind the cloud's load balancer: it's on every request.
 - **Backups are tested against a local repository,** not real object storage. The S3 settings are documented, not exercised.
 - **The Postgres image with pgBackRest isn't vulnerability-scanned in CI** (the app image is). Scanned by hand (2026-10-02), it has 22 fixable HIGH/CRITICAL findings, all in `gosu`'s Go standard library: the official Postgres image uses `gosu` only to switch from root to the postgres user at startup, and they can only be fixed upstream. A blocking scan would keep CI red with nothing to fix here.
 - **Monitoring gaps:** counters reset on restart can hide activity until the next scrape; there's no end-to-end test that alerts actually reach someone (routing them is Alertmanager's job, not set up).

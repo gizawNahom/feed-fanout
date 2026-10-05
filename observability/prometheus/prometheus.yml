@@ -6,9 +6,19 @@ rule_files:
   - rules.yml
 
 scrape_configs:
+  # Every API instance, found through Compose's DNS like the workers (--scale api=N). A static
+  # "api:8000" would scrape whichever instance answered that lookup, and miss the others.
   - job_name: api
+    dns_sd_configs:
+      - names: ["api"]
+        type: A
+        port: 8000
+        refresh_interval: 15s
+
+  # The gateway's view: every request at the edge, including the ones it refused.
+  - job_name: kong
     static_configs:
-      - targets: ["api:8000"]
+      - targets: ["kong:8100"]
 
   - job_name: relay
     static_configs:

@@ -39,8 +39,8 @@ sustainable, run higher ones: the point is to find where it stops.
   into them row by row took ~50 minutes in the first run. That's several times Postgres's memory limit (1.5 GB) on purpose, so feed reads hit
   the disk the way they do at scale, instead of being served entirely from memory.
 
-**Traffic** (`feed.js`, k6): requests arrive at a fixed rate per second, whatever the
-response times (an open model: slow responses don't quietly lower the load). From 10,000
+**Traffic** (`feed.js`, k6), through the API gateway like real clients: requests arrive at a
+fixed rate per second, whatever the response times (an open model: slow responses don't quietly lower the load). From 10,000
 active users (every 10th user of the graph, so a few celebrities among them):
 
 | Share | Request |
@@ -104,7 +104,8 @@ Limits are caps, not reservations: a service uses what it needs, up to its limit
 
 | Service | CPU | Memory |
 |---|---|---|
-| API (1 process) | 1 | 512 MB |
+| API gateway (Kong) | 1 | 512 MB |
+| API (2 instances behind the gateway) | 1 each | 256 MB each |
 | Workers (3, one per partition) | 0.5 each | 256 MB each |
 | Relay | 0.5 | 256 MB |
 | Postgres | 2 | 1.5 GB |
@@ -112,7 +113,7 @@ Limits are caps, not reservations: a service uses what it needs, up to its limit
 | k6 | 1 | 1 GB |
 | Prometheus, Grafana, Loki, Alloy, exporter | 2.5 in total | 1.9 GB in total |
 
-About 6.9 GB in the worst case, on a WSL with 7.6 GB; the expected peak is 4 to 5 GB. Kafka UI and
+About 7.4 GB in the worst case, on a WSL with 7.6 GB; the expected peak is 4 to 5 GB. Kafka UI and
 Adminer aren't started.
 
 ## Limits of this test

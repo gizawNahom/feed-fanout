@@ -13,7 +13,7 @@ import { check } from 'k6';
 import { Counter } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 
-const API = __ENV.API || 'http://api:8000';
+const API = __ENV.API || 'http://kong:8000'; // through the gateway, like real clients
 const RATE = Number(__ENV.RATE || 50);
 const DURATION = __ENV.DURATION || '3m';
 const USERS = Number(__ENV.USERS || 100000); // everyone in the seeded graph

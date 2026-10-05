@@ -289,6 +289,120 @@
       ]
     },
     {
+      "id": 22,
+      "type": "row",
+      "title": "Gateway (Kong)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 17
+      },
+      "panels": []
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Gateway requests / s by status",
+      "description": "Every request at the edge. source=\"kong\": answered by the gateway itself, without reaching the API (429: the global rate limit; 413: body too large). source=\"service\": answered by the API.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (code, source) (rate(kong_http_requests_total[1m]))",
+          "legendFormat": "{{code}} ({{source}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Gateway p99 latency: total, and in Kong itself",
+      "description": "Total: from the request reaching Kong to its response. In Kong: the part spent in the gateway (plugins, routing), the rest being the API.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(kong_request_latency_ms_bucket[1m])))",
+          "legendFormat": "total",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(kong_kong_latency_ms_bucket[1m])))",
+          "legendFormat": "in Kong",
+          "refId": "B"
+        }
+      ]
+    },
+    {
       "id": 7,
       "type": "row",
       "title": "Fanout",
@@ -297,7 +411,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 26
       },
       "panels": []
     },
@@ -314,7 +428,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 18
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -360,7 +474,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 18
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -415,7 +529,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 18
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -470,7 +584,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 18
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -512,7 +626,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 35
       },
       "panels": []
     },
@@ -529,7 +643,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 27
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -584,7 +698,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 27
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -639,7 +753,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 27
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -685,7 +799,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 27
+        "y": 36
       },
       "fieldConfig": {
         "defaults": {
@@ -731,7 +845,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 44
       },
       "fieldConfig": {
         "defaults": {
@@ -773,7 +887,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 50
       },
       "panels": []
     },
@@ -790,7 +904,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 51
       },
       "options": {
         "showTime": true,
@@ -825,7 +939,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 61
       },
       "options": {
         "showTime": true,
@@ -860,7 +974,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 61
       },
       "options": {
         "showTime": true,

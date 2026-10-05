@@ -165,8 +165,11 @@ services:
     <<: *app
     # --no-access-log: no log line per request (see the Dockerfile).
     command: ["uvicorn", "feed_fanout.adapters.http:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    # Clients go through the gateway (kong, port 8000). These ports reach the API instances
+    # directly, for debugging (is it Kong or the API?). A range, so --scale api=N works; Docker
+    # picks a free port in it for each instance: `docker compose ps api` shows which.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8010-8019:8000"
     environment:
       <<: *app-env
       # Local development: trust tokens signed with the dev key (make token AS=alice).
@@ -191,6 +194,36 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # The API gateway: the only public entry point, http://localhost:8000. Routes the public API,
+  # balances across the API instances, refuses excess load at the edge. See gateway/kong.yml.
+  kong:
+    logging: *default-logging
+    image: kong:3.9.3
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      KONG_DATABASE: "off"                     # declarative: gateway/kong.yml is the configuration
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: "off"                 # nothing to administer at runtime
+      KONG_STATUS_LISTEN: 0.0.0.0:8100         # health and /metrics, internal only
+      KONG_NGINX_WORKER_PROCESSES: "2"         # default: one per CPU thread, wasteful on a laptop
+      KONG_DNS_VALID_TTL: "5"                  # notice new API instances within seconds of scaling
+      KONG_PROXY_ACCESS_LOG: /dev/stdout       # the per-request access log lives here, at the edge
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+    volumes:
+      - ./gateway:/kong:ro
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}       # one file descriptor per connection, like the API
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   # Publishes outbox rows to Kafka.
   relay:

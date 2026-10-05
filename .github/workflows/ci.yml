@@ -116,3 +116,14 @@ jobs:
       # through the same script the restore runbook uses.
       - name: Restore test
         run: scripts/restore_test.sh
+
+  gateway:
+    name: API gateway (Kong, 2 API instances)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Only the public API routed, requests spread across both instances, oversized bodies and
+      # bursts beyond the global rate limit refused at the edge.
+      - name: Gateway test
+        run: scripts/gateway_test.sh
