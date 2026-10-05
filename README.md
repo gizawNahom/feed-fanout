@@ -1,10 +1,20 @@
 # feed-fanout
 
 [![CI](https://github.com/gizawNahom/feed-fanout/actions/workflows/ci.yml/badge.svg)](https://github.com/gizawNahom/feed-fanout/actions/workflows/ci.yml)
+[![Security](https://github.com/gizawNahom/feed-fanout/actions/workflows/security.yml/badge.svg)](https://github.com/gizawNahom/feed-fanout/actions/workflows/security.yml)
 
-How Facebook's News Feed delivers posts, built step by step: from an in-memory queue to a production-grade, fault-tolerant pipeline.
+**A news feed backend, built and operated like production.** Fanout-on-write over Kafka and Postgres, behind an API gateway, load-tested to its limits, with tested backups, SLOs and runbooks.
 
-System design interviews talk about queues, workers, and "fanout-on-write" through boxes and arrows. This repo turns that diagram into code you can run. The project grows in tagged versions. Each version adds one layer and fixes what broke in the one before it.
+Posting returns in milliseconds, and a post reaches its author's followers within a second (p99). Past its capacity, the system degrades gracefully: it keeps serving, turns the excess away at the gateway, and produces no errors.
+
+| | |
+|---|---|
+| **Measured** | Load-tested with 100,000 users and 25 million feed rows. Every fix is [measured before and after](docs/performance/): CPU per request −55%, overload went from collapse to zero errors |
+| **Reliable** | Transactional outbox, idempotent fanout, dead letters; broker failover and point-in-time restore tested in CI |
+| **Secure** | JWT auth with key rotation, per-user and edge rate limits, dependency and image scanning |
+| **Operable** | SLO with burn-rate alerts, dashboards, logs, [runbooks](docs/runbooks/), and a [readiness checklist](docs/production-readiness.md) mapping every claim to its evidence |
+
+It started from a classic system-design question: how does a social feed deliver a post to everyone who follows its author? It grew in [tagged versions](#evolution), each one fixing what the previous one couldn't handle.
 
 ## The design
 
@@ -26,6 +36,8 @@ POST /posts ──► API ──► Postgres: posts + outbox
 
 GET /me/feed ───────► API ──► Postgres: feed_items ⨝ posts (newest first)
 ```
+
+Every request enters through Kong, the [API gateway](#api-gateway), which balances across the API instances and refuses excess load at the edge.
 
 **The trade-off:** posting is fast and reads are cheap, but feeds are *eventually consistent*. A new post takes a moment to reach every follower.
 
