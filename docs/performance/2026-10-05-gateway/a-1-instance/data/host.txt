@@ -1,0 +1,6 @@
+date: 2026-10-05T12:15:45+03:00
+commit: 29103cc
+cpu: 12th Gen Intel(R) Core(TM) i5-1245U, 12 threads
+memory (as Docker sees it): 7.6 GiB
+kernel: 6.18.40.1-microsoft-standard-WSL2
+rates: 100 400; step: 2m; pause: 60
