@@ -53,6 +53,7 @@ Every request enters through Kong, the [API gateway](#api-gateway), which balanc
 | [v4-reliable](https://github.com/gizawNahom/feed-fanout/tree/v4-reliable) | Dead-letter topic, retries with jittered backoff, transactional outbox, graceful shutdown, incremental rebalancing | Never lose or duplicate a post |
 | [v5-ops](https://github.com/gizawNahom/feed-fanout/tree/v5-ops) | CI, logging, health checks, Docker, 3-broker Kafka | Production readiness |
 | [v6-prod-ready](https://github.com/gizawNahom/feed-fanout/tree/v6-prod-ready) | Metrics, dashboards and tested alerts, logs in Loki; JWT auth and posting limits; a hexagonal core tested on two assemblies, 100% mutation score; security scanning; backups with tested point-in-time restore; load tests, profiling, overload protection | Measured, safe under load, operable: [claim by claim](docs/production-readiness.md) |
+| [v7-gateway](https://github.com/gizawNahom/feed-fanout/tree/v7-gateway) | Kong API gateway in front of 2 API instances: routing, load balancing, a global rate limit and a request-size limit at the edge; gateway tests in CI | Excess load refused before it reaches Python; scaling out measured: 116 → 170 req/s served ([A/B](docs/performance/2026-10-05-gateway/README.md)) |
 | *next* | Hybrid fanout for celebrities ([known limitations](#known-limitations-and-next-steps)) | |
 
 ### v6 in brief
