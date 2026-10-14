@@ -5,7 +5,7 @@
 #   migrate alembic upgrade head
 
 # --- Build: install dependencies into a virtualenv ---------------------------------
-FROM python:3.14.7-slim-trixie AS build
+FROM python:3.14.8-slim-trixie AS build
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.1 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
 # --- Runtime: just Python, the virtualenv and the code ------------------------------
-FROM python:3.14.7-slim-trixie
+FROM python:3.14.8-slim-trixie
 
 # Debian's security updates, applied at build time. The official image is rebuilt only every so
 # often, so it can lag behind fixes Debian has already published (OpenSSL, in 2026-10: the image
