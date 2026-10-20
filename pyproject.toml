@@ -4,13 +4,13 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
-    "confluent-kafka>=2.15.1",
-    "fastapi>=0.141.1",
+    "confluent-kafka>=2.16.0",
+    "fastapi>=0.143.3",
     "prometheus-client>=0.26.0",
     "psycopg[binary]>=3.3.6",
     "pydantic-settings",
     "pyjwt[crypto]>=2.15.1",
-    "sqlalchemy>=2.1.1",
+    "sqlalchemy>=2.1.5",
     "structlog>=26.1.0",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -20,9 +20,9 @@ dev = [
     "coverage>=7.16",
     "httpx2>=2.13.1",
     "mutmut>=3.8.0",
-    "mypy>=2.3.1",
+    "mypy>=2.4.0",
     "pytest>=9.1.1",
-    "ruff>=0.16.9",
+    "ruff>=0.17.1",
     "testcontainers[postgres]>=4.15.0",
 ]
 
