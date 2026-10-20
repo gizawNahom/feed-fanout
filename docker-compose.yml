@@ -106,7 +106,7 @@ services:
   # http://localhost:8081  (System: PostgreSQL, Server: postgres, user/pass/db: feed)
   adminer:
     logging: *default-logging
-    image: adminer:6.1.1
+    image: adminer:6.1.2
     ports:
       - "127.0.0.1:8081:8080"
     environment:
@@ -199,7 +199,7 @@ services:
   # balances across the API instances, refuses excess load at the edge. See gateway/kong.yml.
   kong:
     logging: *default-logging
-    image: kong:3.9.3
+    image: kong:3.9.4
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -339,7 +339,7 @@ services:
   # Dashboards, provisioned from observability/grafana. http://localhost:3000
   grafana:
     logging: *default-logging
-    image: grafana/grafana:13.2.3
+    image: grafana/grafana:13.2.4
     profiles: [observability]
     ports:
       - "127.0.0.1:3000:3000"
