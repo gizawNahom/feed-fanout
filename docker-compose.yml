@@ -106,7 +106,7 @@ services:
   # http://localhost:8081  (System: PostgreSQL, Server: postgres, user/pass/db: feed)
   adminer:
     logging: *default-logging
-    image: adminer:6.1.1
+    image: adminer:6.1.2
     ports:
       - "127.0.0.1:8081:8080"
     environment:
@@ -272,7 +272,7 @@ services:
   # http://localhost:9090  (Alerts page: http://localhost:9090/alerts)
   prometheus:
     logging: *default-logging
-    image: prom/prometheus:v3.15.0
+    image: prom/prometheus:v3.15.1
     profiles: [observability]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -303,7 +303,7 @@ services:
   # Log store. Queried through Grafana (Explore -> Loki, or the dashboard's logs panels).
   loki:
     logging: *default-logging
-    image: grafana/loki:3.7.8
+    image: grafana/loki:3.7.9
     profiles: [observability]
     command: ["-config.file=/etc/loki/loki.yml"]
     ports:
@@ -316,7 +316,7 @@ services:
   # Collects every container's stdout and ships it to Loki. http://localhost:12345 (its UI)
   alloy:
     logging: *default-logging
-    image: grafana/alloy:v1.20.1
+    image: grafana/alloy:v1.21.2
     profiles: [observability]
     command:
       - run
@@ -339,7 +339,7 @@ services:
   # Dashboards, provisioned from observability/grafana. http://localhost:3000
   grafana:
     logging: *default-logging
-    image: grafana/grafana:13.2.3
+    image: grafana/grafana:13.2.4
     profiles: [observability]
     ports:
       - "127.0.0.1:3000:3000"
