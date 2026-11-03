@@ -76,7 +76,7 @@ services:
   # Only with the observability profile too: make up-backup, plus --profile observability.
   pgbackrest-exporter:
     logging: *default-logging
-    image: woblerr/pgbackrest_exporter:v0.24.0
+    image: woblerr/pgbackrest_exporter:v0.25.0
     profiles: [observability]
     # Never as root: the image's entrypoint would then chown the repository to its own user,
     # and Postgres could no longer archive into it. Its own user (2001) can run the exporter;
