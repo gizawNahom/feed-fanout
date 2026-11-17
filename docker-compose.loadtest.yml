@@ -98,7 +98,7 @@ services:
   # Runs inside the compose network and calls the API as http://api:8000.
   k6:
     logging: *default-logging
-    image: grafana/k6:2.3.0
+    image: grafana/k6:2.4.0
     profiles: [loadtest]
     volumes:
       - ./loadtest:/loadtest:ro
